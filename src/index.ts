@@ -7,7 +7,6 @@ import App from "./app.js"
 import db from "./db.js"
 import { randomUUID } from "crypto"
 import { socketBus } from "./eventStore.js"
-import "dotenv/config"
 
 let socket: net.Socket | null = null
 export let identified = false
@@ -113,12 +112,12 @@ const updateContactStmt = db.prepare(`
     WHERE peer_id = ?
 `)
 
-const insertMessageStmt = db.prepare<[string, string, string, number]>(`
+const insertMessageStmt = db.prepare(`
     INSERT INTO messages (peer_id, direction, client_message_id, text, status, created_at)
     VALUES (?, 'out', ?, ?, 'pending', ?)
 `)
 
-const updateMessageStatusToSent = db.prepare<[string, number, string]>(`
+const updateMessageStatusToSent = db.prepare(`
     UPDATE messages SET status = 'sent', message_id = ?, created_at = ?
     WHERE client_message_id = ?
 `)

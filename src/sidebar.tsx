@@ -30,9 +30,10 @@ export default function Sidebar({focused, setContactInfo, setShowModal, setMode}
     }, [])
 
     useEffect(() => {
-        if (items[0].value !== "+") {
-            setContactInfo({alias: items[0].label, peerId: items[0].value})
-            setItemFocused({label: items[0].label, value: items[0].value})
+        const first = items[0]
+        if (first && first.value !== "+") {
+            setContactInfo({alias: first.label, peerId: first.value})
+            setItemFocused({label: first.label, value: first.value})
         }
     }, [contacts])
     

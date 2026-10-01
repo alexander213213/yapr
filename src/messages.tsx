@@ -6,7 +6,6 @@ import cliBoxes from "cli-boxes";
 import { getAllMessagesByPeerId, sendMessage } from "./index.js";
 import { socketBus } from "./eventStore.js";
 import { randomUUID } from "node:crypto";
-import { logger } from "./logger.js";
 
 export type Line = {
     text: string;
@@ -37,7 +36,7 @@ type LineBreak = {
     type: "top" | "bottom";
 }
 
-export default function MessagesBox({ focused, contactInfo, availableHeight }: { focused: boolean, contactInfo?: { alias: string, peerId: string }, availableHeight: number }) {
+export default function MessagesBox({ focused, contactInfo, availableHeight }: { focused: boolean, contactInfo?: { alias: string, peerId: string } | undefined, availableHeight: number }) {
     const { stdout } = useStdout()
     const height = Math.floor((availableHeight - 4))
     const [offset, setOffset] = useState(0)
