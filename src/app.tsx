@@ -6,7 +6,7 @@ import { Focus, ContactInfo, UserRow } from "./types.js";
 import Sidebar from "./sidebar.js";
 import ContactsModal from "./contactsModal.js";
 import { socketBus } from "./eventStore.js";
-import { findUserStmt } from "./index.js";
+import { findUserStmt } from "./store.js";
 
 
 

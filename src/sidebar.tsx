@@ -1,7 +1,7 @@
 import { Box, useInput } from "ink";
 import SelectInput from "ink-select-input";
 import { useEffect, useState } from "react";
-import { getAllContacts } from "./index.js";
+import { getAllContacts } from "./store.js";
 import { socketBus } from "./eventStore.js";
 
 type ListItem = {label: string, value: string}

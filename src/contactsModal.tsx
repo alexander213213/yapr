@@ -1,7 +1,7 @@
 import { Box, Spacer, Text, useInput } from "ink";
 import TextInput from "ink-text-input";
 import { useEffect, useState } from "react";
-import { addNewContact, updateContact } from "./index.js";
+import { addNewContact, updateContact } from "./store.js";
 
 type ContactsModalParams = {setShowModal: (value: boolean) => unknown} 
 & ({ mode: "add"} 
