@@ -1,76 +1,42 @@
-export type Focus = "sidebar" | "textbox" | "main"
+export type Focus = "sidebar" | "textbox" | "main";
 
 export type ContactsRow = {
-    peer_id: string,
-    alias: string,
-}
+  peer_id: string;
+  alias: string | null;
+  created_at?: number;
+};
 
 export type UserRow = {
-    user_id: string,
-    secret: string,
-    created_at: number
-}
+  user_id: string;
+  secret: string;
+  created_at: number;
+};
+
+export type MessageDirection = "in" | "out";
+
+export type MessageStatus = "pending" | "sent" | "delivered" | "read" | "received";
 
 export type MessageRow = {
-    id: number,
-    peer_id: string,
-    direction: "in" | "out"
-    client_message_id?: string,
-    message_id?: string,
-    text: string
-    created_at: number
-    status: "pending" | "sent" | "received"
-}
-
-export type RegisterMessage = {
-    type: "register";
+  id: number;
+  peer_id: string;
+  direction: MessageDirection;
+  client_message_id?: string | null;
+  message_id?: string | null;
+  text: string;
+  created_at: number;
+  status: MessageStatus;
 };
 
-export type IdentifyMessage = {
-    type: "identify";
-    userId: string;
-    secret: string;
-};
+export type ContactInfo = { alias: string; peerId: string };
 
-export type SendMessage = {
-    type: "send_message";
-    clientMessageId: string
-    to: string
-    text: string
-}
-
-export type IncomingMessage = {
-    type: "incoming_message"
-    messageId: string
-    from: string
-    text: string
-    timestamp: number
-}
-
-export type DeliveryAckMessage = {
-    type: "delivery_ack"
-    messageId: string
-}
-
-export type RegisterAck = {
-    type: "registered"
-    userId: string
-    secret: string
-}
-
-export type IdentifyAck = {
-    type: "identified",
-    userId: string
-}
-
-export type ServerAckMessage = {
-    type: "server_ack"
-    clientMessageId: string
-    messageId: string
-    status: "accepted"
-    timestamp: number
-}
-
-export type ServerMessage = IncomingMessage | ServerAckMessage | IdentifyAck | RegisterAck
-
-export type ContactInfo = {alias: string, peerId: string}
+// Server frame types live in protocol.ts; UI-facing aliases stay here so views
+// import from one place.
+export type {
+  ErrorFrame,
+  IncomingFrame,
+  KeysFrame,
+  PendingDoneFrame,
+  PingFrame,
+  ReadReceiptFrame,
+  ServerAckFrame,
+} from "./protocol.js";
