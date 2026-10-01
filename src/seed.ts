@@ -83,13 +83,20 @@ while (i < TOTAL_MESSAGES) {
   currentTime += faker.number.int({ min: 10, max: 60 });
 }
 
-// Insert in transaction
-const insertMany = db.transaction((msgs: any[]) => {
-  for (const msg of msgs) {
+// Insert in a transaction (node:sqlite has no db.transaction helper).
+db.exec("BEGIN IMMEDIATE");
+try {
+  for (const msg of messages) {
     insert.run(msg);
   }
-});
-
-insertMany(messages);
+  db.exec("COMMIT");
+} catch (err) {
+  try {
+    db.exec("ROLLBACK");
+  } catch {
+    // Best effort.
+  }
+  throw err;
+}
 
 console.log(`Seeded ${messages.length} messages with bursts`);
