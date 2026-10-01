@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
 import { dbPathFor, ensureDataDir } from "./storage.js";
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 const dataDir = ensureDataDir();
 const dbPath = dbPathFor(dataDir);
@@ -44,7 +44,7 @@ db.exec(`
     message_id TEXT,
     text TEXT NOT NULL,
     created_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000),
-    status TEXT NOT NULL CHECK (status IN ('pending', 'sent', 'received')),
+    status TEXT NOT NULL CHECK (status IN ('pending', 'sent', 'delivered', 'read', 'received')),
     UNIQUE (client_message_id),
     UNIQUE (message_id)
   );
@@ -53,6 +53,12 @@ db.exec(`
     peer_id TEXT PRIMARY KEY,
     alias TEXT COLLATE BINARY UNIQUE,
     created_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
+  );
+
+  CREATE TABLE IF NOT EXISTS peers (
+    user_id TEXT PRIMARY KEY,
+    pubkey TEXT NOT NULL,
+    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
   );
 
   CREATE INDEX IF NOT EXISTS idx_messages_peer_time
@@ -68,11 +74,58 @@ db.exec(`
 const row = db
   .prepare(`SELECT version FROM schema_version ORDER BY version DESC LIMIT 1`)
   .get() as { version: number } | undefined;
+let version: number;
 if (!row) {
   db.prepare(`INSERT INTO schema_version (version) VALUES (?)`).run(SCHEMA_VERSION);
-} else if (row.version !== SCHEMA_VERSION) {
+  version = SCHEMA_VERSION;
+} else {
+  version = row.version;
+}
+
+if (version === 1) {
+  // v1 -> v2: extended statuses + peers key cache. CHECK constraints can't be
+  // altered, so the messages table is rebuilt (same columns, wider CHECK).
+  db.exec(`ALTER TABLE messages RENAME TO messages_v1`);
+  db.exec(`
+    CREATE TABLE messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      peer_id TEXT NOT NULL,
+      direction TEXT NOT NULL CHECK (direction IN ('in', 'out')),
+      client_message_id TEXT,
+      message_id TEXT,
+      text TEXT NOT NULL,
+      created_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000),
+      status TEXT NOT NULL CHECK (status IN ('pending', 'sent', 'delivered', 'read', 'received')),
+      UNIQUE (client_message_id),
+      UNIQUE (message_id)
+    )
+  `);
+  db.exec(`
+    INSERT INTO messages (id, peer_id, direction, client_message_id, message_id, text, created_at, status)
+    SELECT id, peer_id, direction, client_message_id, message_id, text, created_at, status
+    FROM messages_v1
+  `);
+  db.exec(`DROP TABLE messages_v1`);
+  // Indexes were dropped with the old table; recreate them.
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_messages_peer_time ON messages (peer_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_messages_status ON messages (status);
+    CREATE INDEX IF NOT EXISTS idx_contacts_peer ON contacts (peer_id);
+  `);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS peers (
+      user_id TEXT PRIMARY KEY,
+      pubkey TEXT NOT NULL,
+      updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
+    )
+  `);
+  db.prepare(`UPDATE schema_version SET version = ?`).run(2);
+  version = 2;
+}
+
+if (version !== SCHEMA_VERSION) {
   throw new Error(
-    `Unsupported schema version ${row.version} (expected ${SCHEMA_VERSION}). Refusing to open ${dbPath}.`
+    `Unsupported schema version ${version} (expected ${SCHEMA_VERSION}). Refusing to open ${dbPath}.`
   );
 }
 
