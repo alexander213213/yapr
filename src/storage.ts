@@ -1,6 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 
 export const APP_NAME = "yapr";
 export const DB_FILENAME = "yapr.db";
@@ -29,7 +30,12 @@ export function resolveDataDir(): string {
 
 /** Legacy v0 location inside the package dir (wiped on npm update). Kept for migration only. */
 export function legacyDbPath(): string {
-  return path.join(import.meta.dirname, "..", "data", DB_FILENAME);
+  // import.meta.dirname is unavailable under tsx's CJS transform; fall back to import.meta.url.
+  const here =
+    typeof import.meta.dirname === "string"
+      ? import.meta.dirname
+      : path.dirname(fileURLToPath(import.meta.url));
+  return path.join(here, "..", "data", DB_FILENAME);
 }
 
 export function dbPathFor(dataDir: string): string {

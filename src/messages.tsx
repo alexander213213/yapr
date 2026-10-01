@@ -1,11 +1,11 @@
 import { Box, Spacer, Text, useInput, useStdout } from "ink";
 import { JSX, useEffect, useMemo, useRef, useState } from "react";
 import { wrapText } from "./wrap.js";
-import { MessageRow, SendMessage, ServerAckMessage } from "./types.js";
+import { MessageRow, ServerAckFrame } from "./types.js";
 import cliBoxes from "cli-boxes";
-import { getAllMessagesByPeerId, sendMessage } from "./index.js";
+import { getAllMessagesByPeerId, insertPendingMessage } from "./store.js";
+import { sendChatText } from "./client.js";
 import { socketBus } from "./eventStore.js";
-import { randomUUID } from "node:crypto";
 
 export type Line = {
     text: string;
@@ -82,44 +82,30 @@ export default function MessagesBox({ focused, contactInfo, availableHeight }: {
     useEffect(() => {
         if (!contactInfo) return
         const sendHandler = async (msg: string) => {
-            const clientMessageId = randomUUID()
-            
-            const message: MessageRow = {
-                id: -1,
+            const text = msg.trim()
+            if (!text) return
+            const { rowId, clientMessageId } = insertPendingMessage(contactInfo.peerId, text)
+
+            const optimistic: MessageRow = {
+                id: rowId,
                 client_message_id: clientMessageId,
                 direction: "out",
                 peer_id: contactInfo.peerId,
-                text: msg,
+                text,
                 status: "pending",
                 created_at: Date.now()
             }
 
-            setMessages(prev => [...prev, message])
+            setMessages(prev => [...prev, optimistic])
 
-            const payload: SendMessage = {
-                to: contactInfo.peerId,
-                type: "send_message",
-                clientMessageId,
-                text: msg
+            try {
+                await sendChatText(contactInfo.peerId, clientMessageId, text)
+            } catch {
+                // Row stays pending; the outbox flushes it on reconnect.
             }
-
-            const id = sendMessage(payload) as number
-
-            setMessages(prev => {
-                const newList = prev.map(msg => {
-                    if (msg.client_message_id === clientMessageId) {
-                        return {
-                            ...msg,
-                            id
-                        }
-                    } 
-                    return msg
-                })
-                return newList
-            })
         }
 
-        const ackHandler = (message: ServerAckMessage) => {
+        const ackHandler = (message: ServerAckFrame) => {
             setMessages(prev => {
                 const newList = prev.map(msg => {
                     if (msg.client_message_id === message.clientMessageId) {
