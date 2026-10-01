@@ -1,6 +1,6 @@
-import { render, Box, Text, useInput, useApp, useStdout } from "ink";
+import { Box, Text, useInput, useApp, useStdout } from "ink";
 import TextInput from "ink-text-input";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import MessagesBox from "./messages.js";
 import { Focus, ContactInfo, UserRow } from "./types.js";
 import Sidebar from "./sidebar.js";
