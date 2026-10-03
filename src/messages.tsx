@@ -36,6 +36,14 @@ type LineBreak = {
     type: "top" | "bottom";
 }
 
+type StatusLine = {
+    text: JSX.Element;
+    direction: 'in' | 'out';
+    messageId: string;
+    lineIndex: "s"
+    type: "status";
+}
+
 export default function MessagesBox({ focused, contactInfo, availableHeight }: { focused: boolean, contactInfo?: { alias: string, peerId: string } | undefined, availableHeight: number }) {
     const { stdout } = useStdout()
     const height = Math.floor((availableHeight - 4))
@@ -224,14 +232,12 @@ function statusGlyph(status: Line["status"]): string {
 
 function linesToBubbles(lines: Line[]) {
     const Boxes = lines.flatMap((line) => {
-        const result: (BubbleLine | LineBreak)[] = []
-        const glyph = line.direction === "out" && line.isLastLine ? statusGlyph(line.status) : ""
+        const result: (BubbleLine | LineBreak | StatusLine)[] = []
         const text = (
             <Text>
                 <Text color={line.status !== "pending" ? "#9a9e3f" : "#1b2a09"}>{cliBoxes.round.left}</Text>
                 {line.text}
                 <Text color={line.status !== "pending" ? "#9a9e3f" : "#1b2a09"}>{cliBoxes.round.right}</Text>
-                {glyph ? <Text dimColor> {glyph}</Text> : null}
             </Text>
         )
         const box: BubbleLine = {
@@ -271,6 +277,20 @@ function linesToBubbles(lines: Line[]) {
                 lineIndex: "x",
                 type: "bottom"
             })
+            // Delivery status lives on its own dim line under the bubble so the
+            // content width (and borders) never shift.
+            if (line.direction === "out") {
+                const glyph = statusGlyph(line.status)
+                if (glyph) {
+                    result.push({
+                        text: (<Text dimColor>{glyph}</Text>),
+                        direction: line.direction,
+                        messageId: line.messageId,
+                        lineIndex: "s",
+                        type: "status",
+                    })
+                }
+            }
         }
         return result
     })
