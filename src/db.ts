@@ -4,6 +4,13 @@ import { dbPathFor, ensureDataDir } from "./storage.js";
 
 const SCHEMA_VERSION = 2;
 
+// Tests must isolate storage explicitly: static imports evaluate before any
+// test-body env assignment, so an unset dir under Vitest would silently open
+// the REAL user database (this exact leak happened once — never again).
+if (process.env.VITEST && !process.env.YAPR_DATA_DIR) {
+  throw new Error("refusing to open the user database under Vitest without YAPR_DATA_DIR");
+}
+
 const dataDir = ensureDataDir();
 const dbPath = dbPathFor(dataDir);
 const isNewFile = !fs.existsSync(dbPath);

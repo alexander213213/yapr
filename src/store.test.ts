@@ -3,20 +3,25 @@ import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
 
-// Fresh isolated DB per run (store reads env lazily via db import).
+// Isolated DB per run. Static imports evaluate BEFORE this body runs, so the
+// store (which opens the DB at import time) must be loaded dynamically AFTER
+// the env assignment — otherwise tests silently hit the real user database.
 const TEST_DIR = path.join(os.tmpdir(), `yapr-store-test-${process.pid}-${Date.now()}`);
 fs.rmSync(TEST_DIR, { recursive: true, force: true });
 process.env.YAPR_DATA_DIR = TEST_DIR;
 
 const UID = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 
-import {
+const {
   addNewContact,
+  deleteContact,
+  findContact,
+  getAllContacts,
   getUnreadCounts,
   insertIncomingMessage,
   insertPendingMessage,
   markThreadRead,
-} from "./store.js";
+} = await import("./store.js");
 
 describe("store threads", () => {
   it("tracks unread counts and flips threads read with ids", () => {
@@ -54,5 +59,17 @@ describe("store threads", () => {
       ok: false,
       message: "Alias already taken.",
     });
+  });
+
+  it("deletes contacts but keeps their history", () => {
+    const id = `gone-${UID}`;
+    expect(addNewContact(id, `Goner ${UID}`)).toEqual({ ok: true });
+    insertIncomingMessage(id, `gm-${UID}`, "bye history", 3000);
+    expect(deleteContact(id)).toBe(true);
+    expect(deleteContact(id)).toBe(false);
+    expect(findContact(id)).toBeUndefined();
+    expect(getAllContacts().some((c) => c.peer_id === id)).toBe(false);
+    // History survives the deletion.
+    expect(getUnreadCounts()[id]).toBe(1);
   });
 });
