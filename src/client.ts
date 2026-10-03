@@ -354,3 +354,8 @@ export type { ServerAckFrame };
 export function sendChatText(to: string, clientMessageId: string, text: string): Promise<void> {
   return client.sendChatText(to, clientMessageId, text);
 }
+
+/** Module-level read receipt used by thread views. */
+export function sendReadReceipt(messageId: string): void {
+  client.sendReadReceipt(messageId);
+}

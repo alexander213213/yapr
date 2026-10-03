@@ -1,42 +1,66 @@
 import { Box, useInput } from "ink";
 import SelectInput from "ink-select-input";
 import { useEffect, useState } from "react";
-import { getAllContacts } from "./store.js";
+import { getAllContacts, getUnreadCounts } from "./store.js";
 import { socketBus } from "./eventStore.js";
+import type { ContactsRow } from "./types.js";
 
 type ListItem = {label: string, value: string}
+
+function toItems(contacts: ContactsRow[], unread: Record<string, number>): ListItem[] {
+    const items = contacts.map((value) => {
+        const name = value.alias ?? value.peer_id;
+        const count = unread[value.peer_id] ?? 0;
+        return {
+            label: count > 0 ? `${name} (${count})` : name,
+            value: value.peer_id
+        }
+    })
+    items.push({label: "+ Add New Contact", value: "+"})
+    return items
+}
 
 export default function Sidebar({focused, setContactInfo, setShowModal, setMode}: {focused: boolean, setContactInfo: (value: {alias: string, peerId: string} | undefined)=>unknown, setShowModal: (value: boolean)=>unknown, setMode: (value: "add" | "edit")=>unknown}) {
     const [itemFocused, setItemFocused] = useState<ListItem | undefined>()
     const [contacts, setContacts] = useState(getAllContacts())
+    const [unread, setUnread] = useState<Record<string, number>>(getUnreadCounts())
+
+    const refresh = () => {
+        setContacts(getAllContacts())
+        setUnread(getUnreadCounts())
+    }
+
     const onSelect = (item: ListItem) => {
         if (item.value === "+") {
             setMode("add")
             setShowModal(true)
             return
         }
-        setContactInfo({alias: item.label, peerId: item.value})
+        const contact = contacts.find((c) => c.peer_id === item.value)
+        setContactInfo({alias: contact?.alias ?? item.label, peerId: item.value})
     }
 
     useEffect(() => {
-        const handler = () => {
-            setContacts(getAllContacts)
-        }
-
-        socketBus.on("new_contact", handler)
+        socketBus.on("new_contact", refresh)
+        socketBus.on("incoming_message", refresh)
+        socketBus.on("identified", refresh)
         return () => {
-            socketBus.off("new_contact", handler)
+            socketBus.off("new_contact", refresh)
+            socketBus.off("incoming_message", refresh)
+            socketBus.off("identified", refresh)
         }
     }, [])
 
+    const items = toItems(contacts, unread)
+
     useEffect(() => {
-        const first = items[0]
-        if (first && first.value !== "+") {
-            setContactInfo({alias: first.label, peerId: first.value})
-            setItemFocused({label: first.label, value: first.value})
+        const first = items.find((item) => item.value !== "+")
+        if (first) {
+            onSelect(first)
+            setItemFocused(first)
         }
     }, [contacts])
-    
+
     useInput((input, key) => {
         if(!focused) return
         if (key.rightArrow || key.tab || key.return) {
@@ -45,29 +69,22 @@ export default function Sidebar({focused, setContactInfo, setShowModal, setMode}
                 onSelect(itemFocused)
             }
             if (itemFocused.value !== "+") {
-                setContactInfo({alias: itemFocused.label, peerId: itemFocused.value})
+                const contact = contacts.find((c) => c.peer_id === itemFocused.value)
+                setContactInfo({alias: contact?.alias ?? itemFocused.label, peerId: itemFocused.value})
             }
             return
-        } 
+        }
 
         if (key.leftArrow && itemFocused?.value !== "+") {
             if (!itemFocused) return
             setMode("edit")
-            setContactInfo({alias: itemFocused.label, peerId: itemFocused.value})
+            const contact = contacts.find((c) => c.peer_id === itemFocused.value)
+            setContactInfo({alias: contact?.alias ?? itemFocused.label, peerId: itemFocused.value})
             setShowModal(true)
             return
         }
     })
-    
 
-
-    const items = contacts.map((value) => {
-        return {
-            label: value.alias ?? value.peer_id,
-            value: value.peer_id
-        }
-    })
-    items.push({label: "+ Add New Contact", value: "+"})
     return (
         <Box width={"20%"} borderColor={focused ? "#496b22" : "#0e450b"} borderStyle={"round"}>
             <SelectInput isFocused={focused} items={items} onSelect={onSelect} onHighlight={(item) => setItemFocused(item)}></SelectInput>

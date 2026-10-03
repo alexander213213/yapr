@@ -63,6 +63,13 @@ const updateMessageStatusToReadStmt = db.prepare(`
 const markInboundReadStmt = db.prepare(`
     UPDATE messages SET status = 'read'
     WHERE peer_id = ? AND direction = 'in' AND status = 'received'
+    RETURNING message_id
+`);
+
+const unreadCountsStmt = db.prepare(`
+    SELECT peer_id, COUNT(*) AS n FROM messages
+    WHERE direction = 'in' AND status = 'received'
+    GROUP BY peer_id
 `);
 
 const findMessagesByPeerIdStmt = db.prepare(`
@@ -90,6 +97,26 @@ const upsertPeerKeyStmt = db.prepare(`
 `);
 
 export const OUTBOX_BATCH_LIMIT = 100;
+
+/**
+ * node:sqlite reports constraint violations via numeric `errcode`
+ * (better-sqlite3 used string `code`). Extended codes: UNIQUE 2067, PRIMARYKEY 1555.
+ */
+function sqliteErrcode(err: unknown): number | undefined {
+  return (err as { errcode?: number }).errcode;
+}
+
+function isUniqueViolation(err: unknown): boolean {
+  return (
+    (err as { code?: string }).code === "SQLITE_CONSTRAINT_UNIQUE" || sqliteErrcode(err) === 2067
+  );
+}
+
+function violationTargets(err: unknown, tableAndColumn: string): boolean {
+  if ((err as { code?: string }).code === "SQLITE_CONSTRAINT_PRIMARYKEY") return true;
+  if (sqliteErrcode(err) === 1555) return true;
+  return String((err as { message?: string }).message ?? err).includes(tableAndColumn);
+}
 
 export function getSessionUser(): UserRow | undefined {
   return findUserStmt.get() as UserRow | undefined;
@@ -137,10 +164,20 @@ export function markMessageRead(messageId: string): void {
   updateMessageStatusToReadStmt.run(messageId);
 }
 
-/** Mark a whole inbound thread read. Returns the number of rows flipped. */
-export function markThreadRead(peerId: string): number {
-  const info = markInboundReadStmt.run(peerId);
-  return Number(info.changes);
+/** Mark a whole inbound thread read. Returns the flipped message ids for receipts. */
+export function markThreadRead(peerId: string): string[] {
+  const rows = markInboundReadStmt.all(peerId) as { message_id: string }[];
+  return rows.map((r) => r.message_id);
+}
+
+/** Unread inbound counts per peer for sidebar badges. */
+export function getUnreadCounts(): Record<string, number> {
+  const rows = unreadCountsStmt.all() as { peer_id: string; n: number }[];
+  const counts: Record<string, number> = {};
+  for (const row of rows) {
+    counts[row.peer_id] = row.n;
+  }
+  return counts;
 }
 
 export type InsertIncomingResult =
@@ -158,7 +195,7 @@ export function insertIncomingMessage(
     const info = insertIncomingMessageStmt.run(from, messageId, text, timestamp);
     return { inserted: true, rowId: Number(info.lastInsertRowid) };
   } catch (err: unknown) {
-    if ((err as { code?: string }).code === "SQLITE_CONSTRAINT_UNIQUE") {
+    if (isUniqueViolation(err)) {
       return { inserted: false, duplicate: true };
     }
     throw err;
@@ -193,12 +230,10 @@ export function addNewContact(
     insertContactStmt.run(cleanId, cleanAlias);
     return { ok: true };
   } catch (err: unknown) {
-    const code = (err as { code?: string }).code;
-    const msg = String((err as { message?: string }).message ?? err);
-    if (code === "SQLITE_CONSTRAINT_PRIMARYKEY" || msg.includes("contacts.peer_id")) {
+    if (violationTargets(err, "contacts.peer_id")) {
       return { ok: false, message: "ID already exists in contacts." };
     }
-    if (code === "SQLITE_CONSTRAINT_UNIQUE" || msg.includes("contacts.alias")) {
+    if (isUniqueViolation(err) || violationTargets(err, "contacts.alias")) {
       return { ok: false, message: "Alias already taken." };
     }
     return { ok: false };
@@ -220,9 +255,7 @@ export function updateContact(
     updateContactAliasStmt.run(cleanAlias, oldPeerId);
     return { ok: true };
   } catch (err: unknown) {
-    const code = (err as { code?: string }).code;
-    const msg = String((err as { message?: string }).message ?? err);
-    if (code === "SQLITE_CONSTRAINT_UNIQUE" || msg.includes("contacts.alias")) {
+    if (isUniqueViolation(err) || violationTargets(err, "contacts.alias")) {
       return { ok: false, message: "Alias already taken." };
     }
     return { ok: false };

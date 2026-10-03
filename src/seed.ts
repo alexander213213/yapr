@@ -4,16 +4,11 @@ import db from "./db.js";
 const PEER_ID = "123142125";
 
 db
-// Seed contact
+// Seed contact (never touches other peers' history).
 db.prepare(`
   INSERT OR IGNORE INTO contacts (peer_id, alias)
   VALUES (?, ?)
 `).run(PEER_ID, faker.person.firstName());
-
-// Clear existing messages for this peer
-db.prepare(`
-  DELETE FROM messages WHERE peer_id = ?
-`).run(PEER_ID);
 
 // Prepare insert
 const insert = db.prepare(`
@@ -36,7 +31,15 @@ const insert = db.prepare(`
   )
 `);
 
-function generateMessage(direction: "in" | "out", timestamp: number) {
+function generateMessage(direction: "in" | "out", timestamp: number): {
+  peer_id: string;
+  direction: "in" | "out";
+  client_message_id: string | null;
+  message_id: string | null;
+  text: string;
+  created_at: number;
+  status: "pending" | "sent" | "received";
+} {
   const isOut = direction === "out";
 
   return {
@@ -52,8 +55,16 @@ function generateMessage(direction: "in" | "out", timestamp: number) {
   };
 }
 
-const messages: any[] = [];
-let currentTime = Math.floor(Date.now() / 1000) - 60 * 60;
+const messages: Array<{
+  peer_id: string;
+  direction: "in" | "out";
+  client_message_id: string | null;
+  message_id: string | null;
+  text: string;
+  created_at: number;
+  status: "pending" | "sent" | "received";
+}> = [];
+let currentTime = Date.now() - 60 * 60 * 1000;
 
 // Start with either side
 let currentDirection: "in" | "out" = faker.helpers.arrayElement(["in", "out"]);
@@ -66,7 +77,7 @@ while (i < TOTAL_MESSAGES) {
   const burstSize = faker.number.int({ min: 1, max: 4 });
 
   for (let j = 0; j < burstSize && i < TOTAL_MESSAGES; j++) {
-    currentTime += faker.number.int({ min: 2, max: 20 });
+    currentTime += faker.number.int({ min: 2000, max: 20000 });
 
     messages.push(generateMessage(currentDirection, currentTime));
     i++;
@@ -80,7 +91,7 @@ while (i < TOTAL_MESSAGES) {
   }
 
   // Add a slightly longer pause between bursts
-  currentTime += faker.number.int({ min: 10, max: 60 });
+  currentTime += faker.number.int({ min: 10000, max: 60000 });
 }
 
 // Insert in a transaction (node:sqlite has no db.transaction helper).

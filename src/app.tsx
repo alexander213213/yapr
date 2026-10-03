@@ -23,24 +23,43 @@ export default function App() {
     })
     const [showContactModal, setShowContactModal] = useState(false)
     const [mode, setMode] = useState<"add" | "edit">("add")
+    const [online, setOnline] = useState(false)
+    const [lastError, setLastError] = useState<string | undefined>()
     const availableHeight = size.rows - 1 - 3
 
 
     const handleTextSubmit = (value: string) => {
         if (!contactInfo) return
-        if (!textBox) return
-        socketBus.emit("send_message", textBox)
+        const text = value.trim()
+        if (!text) return
+        socketBus.emit("send_message", text)
         setTextBox("")
     }
     useEffect(() => {
-        const handler = () => {
+        const onIdentified = () => {
             setUser(findUserStmt.get() as UserRow | undefined)
         }
-        socketBus.on("identified", handler)
+        const onConnection = (isOnline: boolean) => {
+            setOnline(isOnline)
+        }
+        const onServerError = (msg: { code: string, message: string }) => {
+            setLastError(`${msg.code}: ${msg.message}`)
+        }
+        socketBus.on("identified", onIdentified)
+        socketBus.on("connection", onConnection)
+        socketBus.on("server_error", onServerError)
         return () => {
-            socketBus.off("identified", handler)
+            socketBus.off("identified", onIdentified)
+            socketBus.off("connection", onConnection)
+            socketBus.off("server_error", onServerError)
         }
     }, [])
+
+    useEffect(() => {
+        if (!lastError) return
+        const timer = setTimeout(() => setLastError(undefined), 5000)
+        return () => clearTimeout(timer)
+    }, [lastError])
 
     useEffect(() => {
         const onResize = () => {
@@ -72,12 +91,17 @@ export default function App() {
     return (
         <>
             {
-                showContactModal ? (<Box width={size.cols} height={size.rows} justifyContent="center" alignItems="center" flexDirection="column">
-                    <ContactsModal mode={mode} setShowModal={setShowContactModal} contactInfo={contactInfo!}></ContactsModal>
+                showContactModal && (mode === "add" || contactInfo) ? (<Box width={size.cols} height={size.rows} justifyContent="center" alignItems="center" flexDirection="column">
+                    {mode === "add" ? (
+                        <ContactsModal mode={mode} setShowModal={setShowContactModal}></ContactsModal>
+                    ) : contactInfo ? (
+                        <ContactsModal mode={mode} setShowModal={setShowContactModal} contactInfo={contactInfo}></ContactsModal>
+                    ) : null}
                 </Box>
                 ) : (
                     <Box width={size.cols} height={size.rows} alignItems="center" flexDirection="column">
-                        <Text bold color={"#9a9e3f"}>Yapr | {user ? user.user_id : ""}</Text>
+                        <Text bold color={"#9a9e3f"}>Yapr | {user ? user.user_id : ""} {online ? "●" : "○"}</Text>
+                        {lastError ? <Text color="red">{lastError}</Text> : null}
                         <Box width={"100%"} flexGrow={1} alignItems="stretch" justifyContent="center" overflow="hidden">
                             <Sidebar focused={focused === "sidebar"} setContactInfo={setContactInfo} setShowModal={setShowContactModal} setMode={setMode}></Sidebar>
                             <MessagesBox focused={focused === "main"} contactInfo={contactInfo} availableHeight={availableHeight}/>

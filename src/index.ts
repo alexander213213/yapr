@@ -6,7 +6,13 @@ import "./db.js";
 import { client } from "./client.js";
 
 async function main() {
-  process.stdout.write("\x1b[?1049h");
+  if (!process.stdout.isTTY) {
+    process.stderr.write("yapr needs an interactive terminal (stdout is not a TTY).\n");
+    process.exit(1);
+  }
+  const enterAltScreen = () => process.stdout.write("\x1b[?1049h");
+  const leaveAltScreen = () => process.stdout.write("\x1b[?1049l");
+  enterAltScreen();
   const instance = render(React.createElement(App));
 
   client.start();
@@ -16,7 +22,7 @@ async function main() {
   } finally {
     client.stop();
     instance.unmount();
-    process.stdout.write("\x1b[?1049l");
+    leaveAltScreen();
   }
 }
 

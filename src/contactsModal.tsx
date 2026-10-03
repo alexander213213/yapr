@@ -14,6 +14,9 @@ export default function ContactsModal(props: ContactsModalParams) {
     const [peerId, setPeerId] = useState("")
     const [alias, setAlias] = useState("")
 
+    // Contact IDs anchor message history and can never change: in edit mode the
+    // ID field is display-only and focus cycles alias -> submit.
+    const idEditable = mode === "add"
     const [focus, setFocus] = useState<"alias" | "id" | "submit">("alias")
     const [error, setError] = useState<string | undefined>()
 
@@ -24,9 +27,9 @@ export default function ContactsModal(props: ContactsModalParams) {
         } 
     }, [])
 
-    const changeFocus = (focusTo?: typeof focus) => {
+    const changeFocus = () => {
         if (focus === "alias") {
-            setFocus("id")
+            setFocus(idEditable ? "id" : "submit")
         } else if (focus === "id"){
             setFocus("submit")
         } else {
@@ -97,10 +100,17 @@ export default function ContactsModal(props: ContactsModalParams) {
                 <Text>Name: </Text>
                 <TextInput value={alias} onChange={setAlias} placeholder="Enter Contact Name" focus={focus === "alias"}></TextInput>
             </Box>
+            {idEditable ? (
             <Box width={"100%"} paddingX={1} borderStyle={"round"} borderColor={focus === "id" ? "#496b22" : "#0e450b"}>
                 <Text>ID: </Text>
                 <TextInput value={peerId} onChange={setPeerId} placeholder="Enter Contact ID" focus={focus === "id"}></TextInput>
             </Box>
+            ) : (
+            <Box width={"100%"} paddingX={1} borderStyle={"round"} borderColor={"#0e450b"}>
+                <Text>ID: </Text>
+                <Text dimColor>{peerId} (cannot be changed)</Text>
+            </Box>
+            )}
 
             <Box width={"10%"} marginX={1} justifyContent="center" alignItems="center" alignSelf="flex-end" borderColor={focus === "submit" ? "#496b22" : "#0e450b"} borderStyle={"round"}>
                 <Text>Submit</Text>
