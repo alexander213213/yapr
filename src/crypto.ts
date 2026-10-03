@@ -61,32 +61,106 @@ function loadIdentityFile(path: string): { publicKeyB64: string } | null {
   }
 }
 
+/** Cached private key, reloaded when the data dir changes (tests, profile switch). */
+let cachedPrivateKey: { dir: string; key: crypto.KeyObject } | null = null;
+
+function loadPrivateKey(): crypto.KeyObject {
+  const dir = resolveDataDir();
+  if (cachedPrivateKey && cachedPrivateKey.dir === dir) return cachedPrivateKey.key;
+  // Ensure the identity exists, then read it back through the validated loader.
+  loadOrCreateIdentity();
+  const raw = fs.readFileSync(identityPathFor(dir), "utf8");
+  const key = crypto.createPrivateKey({
+    key: JSON.parse(raw) as crypto.JsonWebKey,
+    format: "jwk",
+  });
+  cachedPrivateKey = { dir, key };
+  return key;
+}
+
+function publicKeyFromB64(pubB64: string): crypto.KeyObject {
+  const x = Buffer.from(pubB64, "base64").toString("base64url");
+  return crypto.createPublicKey({
+    key: { kty: "OKP", crv: "X25519", x },
+    format: "jwk",
+  });
+}
+
+function deriveMessageKey(
+  sharedSecret: Buffer,
+  nonce: Buffer,
+  senderId: string,
+  recipientId: string
+): Buffer {
+  return Buffer.from(
+    crypto.hkdfSync("sha256", sharedSecret, nonce, `yapr-v1|${senderId}|${recipientId}`, 32)
+  );
+}
+
+const GCM_NONCE_LEN = 12;
+const GCM_TAG_LEN = 16;
+
 /**
- * Seal plaintext for a peer. C1 SHIM: legacy-style base64 envelope (nonce '').
- * C2 replaces the body with real X25519+HKDF+AES-GCM; call sites stay identical.
+ * Seal plaintext for a peer: X25519 DH + HKDF-SHA256 + AES-256-GCM.
+ * Static-static scheme per docs/CRYPTO.md (no forward secrecy — documented).
  */
 export function sealText(
-  _peerPubB64: string,
-  _senderId: string,
-  _recipientId: string,
+  peerPubB64: string,
+  senderId: string,
+  recipientId: string,
   text: string
 ): Envelope {
-  return { ciphertext: Buffer.from(text, "utf8").toString("base64"), nonce: "" };
+  const shared = crypto.diffieHellman({
+    privateKey: loadPrivateKey(),
+    publicKey: publicKeyFromB64(peerPubB64),
+  });
+  const nonce = crypto.randomBytes(GCM_NONCE_LEN);
+  const key = deriveMessageKey(shared, nonce, senderId, recipientId);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, nonce);
+  const ciphertext = Buffer.concat([cipher.update(text, "utf8"), cipher.final()]);
+  const sealed = Buffer.concat([ciphertext, cipher.getAuthTag()]);
+  return { ciphertext: sealed.toString("base64"), nonce: nonce.toString("base64") };
+}
+
+/** Decode a pre-E2EE legacy envelope (empty nonce, base64 plaintext). */
+function openLegacy(envelope: Envelope): OpenResult {
+  try {
+    return { ok: true, text: Buffer.from(envelope.ciphertext, "base64").toString("utf8") };
+  } catch {
+    return { ok: false };
+  }
 }
 
 /**
- * Open an inbound envelope. Accepts only empty-nonce legacy/plain envelopes in C1;
- * anything else yields { ok: false } so the caller can store a placeholder.
+ * Open an inbound envelope. Empty nonce decodes as legacy plaintext; otherwise
+ * authenticated decryption runs and any failure yields { ok: false } so the
+ * caller stores a placeholder instead of crashing or showing garbage.
  */
 export function openEnvelope(
-  _senderPubB64: string | null,
-  _ownId: string,
-  _senderId: string,
+  senderPubB64: string | null,
+  ownId: string,
+  senderId: string,
   envelope: Envelope
 ): OpenResult {
-  if (envelope.nonce !== "") return { ok: false };
+  if (envelope.nonce === "") return openLegacy(envelope);
+  if (!senderPubB64) return { ok: false };
   try {
-    return { ok: true, text: Buffer.from(envelope.ciphertext, "base64").toString("utf8") };
+    const shared = crypto.diffieHellman({
+      privateKey: loadPrivateKey(),
+      publicKey: publicKeyFromB64(senderPubB64),
+    });
+    const nonce = Buffer.from(envelope.nonce, "base64");
+    if (nonce.length !== GCM_NONCE_LEN) return { ok: false };
+    const sealed = Buffer.from(envelope.ciphertext, "base64");
+    if (sealed.length < GCM_TAG_LEN + 1) return { ok: false };
+    const key = deriveMessageKey(shared, nonce, senderId, ownId);
+    const decipher = crypto.createDecipheriv("aes-256-gcm", key, nonce);
+    decipher.setAuthTag(sealed.subarray(sealed.length - GCM_TAG_LEN));
+    const text = Buffer.concat([
+      decipher.update(sealed.subarray(0, sealed.length - GCM_TAG_LEN)),
+      decipher.final(),
+    ]).toString("utf8");
+    return { ok: true, text };
   } catch {
     return { ok: false };
   }
