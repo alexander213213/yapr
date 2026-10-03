@@ -1,10 +1,10 @@
 import { Box, Spacer, Text, useInput, useStdout } from "ink";
 import { JSX, useEffect, useMemo, useRef, useState } from "react";
 import { wrapText } from "./wrap.js";
-import { MessageRow, ServerAckFrame } from "./types.js";
+import { MessageRow, ServerAckFrame, MessageStatus } from "./types.js";
 import cliBoxes from "cli-boxes";
-import { getAllMessagesByPeerId, insertPendingMessage } from "./store.js";
-import { sendChatText } from "./client.js";
+import { getAllMessagesByPeerId, insertPendingMessage, markThreadRead } from "./store.js";
+import { sendChatText, sendReadReceipt } from "./client.js";
 import { socketBus } from "./eventStore.js";
 
 export type Line = {
@@ -14,7 +14,7 @@ export type Line = {
     isFirstLine: boolean;
     isLastLine: boolean;
     longest: number;
-    status: 'pending' | 'sent' | 'received'
+    status: MessageStatus
     lineIndex: number
 };
 
@@ -119,20 +119,54 @@ export default function MessagesBox({ focused, contactInfo, availableHeight }: {
                 return newList
             })
         }
-        
+
+        const readReceiptHandler = (message: { messageId: string }) => {
+            setMessages(prev => {
+                return prev.map(msg => {
+                    if (msg.message_id === message.messageId && msg.direction === "out") {
+                        return { ...msg, status: "read" as const }
+                    }
+                    return msg
+                })
+            })
+        }
+
+        const markOpenThreadRead = () => {
+            if (!contactInfo) return
+            const ids = markThreadRead(contactInfo.peerId)
+            if (ids.length === 0) return
+            for (const id of ids) {
+                sendReadReceipt(id)
+            }
+            setMessages(prev => {
+                return prev.map(msg => {
+                    if (msg.direction === "in" && msg.status === "received") {
+                        return { ...msg, status: "read" as const }
+                    }
+                    return msg
+                })
+            })
+        }
+
         const inMessageHandler = (message: MessageRow) => {
             if (message.peer_id === contactInfo.peerId) {
                 setMessages(prev => [...prev, message])
+                // The open thread is being viewed: report reads immediately.
+                markOpenThreadRead()
             }
         }
 
         socketBus.on("send_message", sendHandler)
         socketBus.on("send_ack", ackHandler)
         socketBus.on("incoming_message", inMessageHandler)
+        socketBus.on("read_receipt", readReceiptHandler)
+        // Viewing a thread marks its backlog read (receipts go out here).
+        markOpenThreadRead()
         return () => {
             socketBus.off("send_message", sendHandler)
             socketBus.off("send_ack", ackHandler)
             socketBus.off("incoming_message", inMessageHandler)
+            socketBus.off("read_receipt", readReceiptHandler)
         }
     }, [contactInfo?.peerId])
 
@@ -166,8 +200,8 @@ export default function MessagesBox({ focused, contactInfo, availableHeight }: {
             </Box>
 
             {
-                visible.map((value, i) => {
-                    const key = `${i + offset}-${value.messageId}-${value.type}-${value.lineIndex ?? "x"}`;
+                visible.map((value) => {
+                    const key = `${value.messageId}-${value.type}-${value.lineIndex}`;
                     return (<Box key={key} width={"100%"} justifyContent={value.direction === "in" ? "flex-start" : "flex-end"}>
                         {value.text}
                     </Box>)
@@ -178,14 +212,26 @@ export default function MessagesBox({ focused, contactInfo, availableHeight }: {
     )
 }
 
+function statusGlyph(status: Line["status"]): string {
+    switch (status) {
+        case "pending": return "…";
+        case "sent": return "✓";
+        case "delivered": return "✓";
+        case "read": return "✓✓";
+        default: return "";
+    }
+}
+
 function linesToBubbles(lines: Line[]) {
     const Boxes = lines.flatMap((line) => {
         const result: (BubbleLine | LineBreak)[] = []
+        const glyph = line.direction === "out" && line.isLastLine ? statusGlyph(line.status) : ""
         const text = (
             <Text>
                 <Text color={line.status !== "pending" ? "#9a9e3f" : "#1b2a09"}>{cliBoxes.round.left}</Text>
                 {line.text}
                 <Text color={line.status !== "pending" ? "#9a9e3f" : "#1b2a09"}>{cliBoxes.round.right}</Text>
+                {glyph ? <Text dimColor> {glyph}</Text> : null}
             </Text>
         )
         const box: BubbleLine = {
