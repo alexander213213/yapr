@@ -45,6 +45,10 @@ const updateContactAliasStmt = db.prepare(`
     WHERE peer_id = ?
 `);
 
+const deleteContactStmt = db.prepare(`
+    DELETE FROM contacts WHERE peer_id = ?
+`);
+
 const insertPendingMessageStmt = db.prepare(`
     INSERT INTO messages (peer_id, direction, client_message_id, text, status, created_at)
     VALUES (?, 'out', ?, ?, 'pending', ?)
@@ -260,4 +264,14 @@ export function updateContact(
     }
     return { ok: false };
   }
+}
+
+/**
+ * Remove a contact from the list. Message history is intentionally kept: if the
+ * peer messages again, the contact (and its history) reappears automatically.
+ * Returns true when a row was actually removed.
+ */
+export function deleteContact(peerId: string): boolean {
+  const info = deleteContactStmt.run(peerId);
+  return Number(info.changes) > 0;
 }

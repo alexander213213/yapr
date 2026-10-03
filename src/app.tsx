@@ -103,7 +103,7 @@ export default memo(function App() {
                         <Text bold color={"#9a9e3f"}>Yapr | {user ? user.user_id : ""} {online ? "●" : "○"}</Text>
                         {lastError ? <Text color="red">{lastError}</Text> : null}
                         <Box width={"100%"} flexGrow={1} alignItems="stretch" justifyContent="center" overflow="hidden">
-                            <Sidebar focused={focused === "sidebar"} setContactInfo={setContactInfo} setShowModal={setShowContactModal} setMode={setMode}></Sidebar>
+                            <Sidebar focused={focused === "sidebar"} openPeerId={contactInfo?.peerId} setContactInfo={setContactInfo} setShowModal={setShowContactModal} setMode={setMode}></Sidebar>
                             <MessagesBox focused={focused === "main"} contactInfo={contactInfo} availableHeight={availableHeight}/>
                         </Box>
                         <ChatInput focused={focused === "textbox"} onSubmit={handleTextSubmit} />
