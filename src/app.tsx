@@ -1,22 +1,25 @@
 import { Box, Text, useInput, useApp, useStdout } from "ink";
-import TextInput from "ink-text-input";
-import { useEffect, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import MessagesBox from "./messages.js";
 import { Focus, ContactInfo, UserRow } from "./types.js";
 import Sidebar from "./sidebar.js";
 import ContactsModal from "./contactsModal.js";
+import ChatInput from "./inputBox.js";
 import { socketBus } from "./eventStore.js";
 import { findUserStmt } from "./store.js";
 
 
 
-export default function App() {
+export default memo(function App() {
     const { stdout } = useStdout()
     const { exit } = useApp();
-    const [textBox, setTextBox] = useState("")
     const [focused, setFocus] = useState<Focus>("sidebar")
     const [user, setUser] = useState<UserRow | undefined>()
     const [contactInfo, setContactInfo] = useState<ContactInfo | undefined>()
+    // Stable mirror so the memoized submit callback always sees the open thread
+    // without re-creating (which would re-render the input on every selection).
+    const contactRef = useRef(contactInfo)
+    contactRef.current = contactInfo
     const [size, setSize] = useState({
         cols: stdout.columns,
         rows: stdout.rows
@@ -28,13 +31,10 @@ export default function App() {
     const availableHeight = size.rows - 1 - 3
 
 
-    const handleTextSubmit = (value: string) => {
-        if (!contactInfo) return
-        const text = value.trim()
-        if (!text) return
+    const handleTextSubmit = useCallback((text: string) => {
+        if (!contactRef.current) return
         socketBus.emit("send_message", text)
-        setTextBox("")
-    }
+    }, [])
     useEffect(() => {
         const onIdentified = () => {
             setUser(findUserStmt.get() as UserRow | undefined)
@@ -106,19 +106,11 @@ export default function App() {
                             <Sidebar focused={focused === "sidebar"} setContactInfo={setContactInfo} setShowModal={setShowContactModal} setMode={setMode}></Sidebar>
                             <MessagesBox focused={focused === "main"} contactInfo={contactInfo} availableHeight={availableHeight}/>
                         </Box>
-                        <Box width={"100%"} paddingX={1} borderStyle={"round"} borderColor={focused === "textbox" ? "#496b22" : "#0e450b"}>
-                            <TextInput
-                                value={textBox}
-                                onChange={setTextBox}
-                                focus={focused === "textbox"}
-                                placeholder="Enter You Message Here"
-                                onSubmit={handleTextSubmit}
-                            />
-                        </Box>
+                        <ChatInput focused={focused === "textbox"} onSubmit={handleTextSubmit} />
                     </Box>
                 )
             }
 
         </>
     );
-}
+})
