@@ -1,5 +1,5 @@
 import { Box, Spacer, Text, useInput, useStdout } from "ink";
-import { JSX, useEffect, useMemo, useRef, useState } from "react";
+import { JSX, memo, useEffect, useMemo, useRef, useState } from "react";
 import { wrapText } from "./wrap.js";
 import { MessageRow, ServerAckFrame, MessageStatus } from "./types.js";
 import cliBoxes from "cli-boxes";
@@ -44,7 +44,7 @@ type StatusLine = {
     type: "status";
 }
 
-export default function MessagesBox({ focused, contactInfo, availableHeight }: { focused: boolean, contactInfo?: { alias: string, peerId: string } | undefined, availableHeight: number }) {
+export default memo(function MessagesBox({ focused, contactInfo, availableHeight }: { focused: boolean, contactInfo?: { alias: string, peerId: string } | undefined, availableHeight: number }) {
     const { stdout } = useStdout()
     const height = Math.floor((availableHeight - 4))
     const [offset, setOffset] = useState(0)
@@ -218,7 +218,7 @@ export default function MessagesBox({ focused, contactInfo, availableHeight }: {
             }
         </Box>
     )
-}
+})
 
 function statusGlyph(status: Line["status"]): string {
     switch (status) {

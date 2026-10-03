@@ -1,6 +1,6 @@
 import { Box, useInput } from "ink";
 import SelectInput from "ink-select-input";
-import { useEffect, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { getAllContacts, getUnreadCounts } from "./store.js";
 import { socketBus } from "./eventStore.js";
 import type { ContactsRow } from "./types.js";
@@ -20,10 +20,13 @@ function toItems(contacts: ContactsRow[], unread: Record<string, number>): ListI
     return items
 }
 
-export default function Sidebar({focused, setContactInfo, setShowModal, setMode}: {focused: boolean, setContactInfo: (value: {alias: string, peerId: string} | undefined)=>unknown, setShowModal: (value: boolean)=>unknown, setMode: (value: "add" | "edit")=>unknown}) {
+export default memo(function Sidebar({focused, setContactInfo, setShowModal, setMode}: {focused: boolean, setContactInfo: (value: {alias: string, peerId: string} | undefined)=>unknown, setShowModal: (value: boolean)=>unknown, setMode: (value: "add" | "edit")=>unknown}) {
     const [itemFocused, setItemFocused] = useState<ListItem | undefined>()
     const [contacts, setContacts] = useState(getAllContacts())
     const [unread, setUnread] = useState<Record<string, number>>(getUnreadCounts())
+    // Auto-select once on first load only. Re-running this on every contacts
+    // change used to yank the open thread away whenever a message arrived.
+    const didInitialSelect = useRef(false)
 
     const refresh = () => {
         setContacts(getAllContacts())
@@ -51,11 +54,13 @@ export default function Sidebar({focused, setContactInfo, setShowModal, setMode}
         }
     }, [])
 
-    const items = toItems(contacts, unread)
+    const items = useMemo(() => toItems(contacts, unread), [contacts, unread])
 
     useEffect(() => {
+        if (didInitialSelect.current) return
         const first = items.find((item) => item.value !== "+")
         if (first) {
+            didInitialSelect.current = true
             onSelect(first)
             setItemFocused(first)
         }
@@ -90,4 +95,4 @@ export default function Sidebar({focused, setContactInfo, setShowModal, setMode}
             <SelectInput isFocused={focused} items={items} onSelect={onSelect} onHighlight={(item) => setItemFocused(item)}></SelectInput>
         </Box>
     )
-}
+})
