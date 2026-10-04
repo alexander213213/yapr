@@ -6,10 +6,16 @@ import Sidebar from "./sidebar.js";
 import ContactsModal from "./contactsModal.js";
 import ContactsBrowser from "./contactsBrowser.js";
 import SettingsForm from "./settingsForm.js";
+import GroupCreateModal from "./groupCreateModal.js";
+import GroupMembersModal from "./groupMembersModal.js";
+import GroupNicksModal from "./groupNicksModal.js";
+import HistoryApproveModal from "./historyApproveModal.js";
+import DetailsPane from "./detailsPane.js";
 import ChatInput from "./inputBox.js";
 import { getTheme } from "./themes.js";
 import { socketBus } from "./eventStore.js";
-import { findUserStmt, openChat } from "./store.js";
+import { findUserStmt, groupIdFromThreadKey, groupThreadKey, openChat } from "./store.js";
+import type { HistoryRequestFrame } from "./protocol.js";
 
 
 
@@ -31,8 +37,10 @@ export default memo(function App() {
     const [mode, setMode] = useState<"add" | "edit">("add")
     const [online, setOnline] = useState(false)
     const [lastError, setLastError] = useState<string | undefined>()
-    const [view, setView] = useState<"chat" | "contacts" | "settings">("chat")
+    const [view, setView] = useState<"chat" | "contacts" | "settings" | "createGroup" | "members" | "nicks">("chat")
     const [modalReturnView, setModalReturnView] = useState<"chat" | "contacts">("chat")
+    const [detailsOpen, setDetailsOpen] = useState(false)
+    const [historyAsk, setHistoryAsk] = useState<{ groupId: string; requester: string } | undefined>()
     const theme = getTheme();
     const availableHeight = size.rows - 1 - 3
 
@@ -54,10 +62,15 @@ export default memo(function App() {
         socketBus.on("identified", onIdentified)
         socketBus.on("connection", onConnection)
         socketBus.on("server_error", onServerError)
+        const onHistoryRequest = (msg: HistoryRequestFrame) => {
+            setHistoryAsk({ groupId: msg.groupId, requester: msg.requester })
+        }
+        socketBus.on("history_request", onHistoryRequest)
         return () => {
             socketBus.off("identified", onIdentified)
             socketBus.off("connection", onConnection)
             socketBus.off("server_error", onServerError)
+            socketBus.off("history_request", onHistoryRequest)
         }
     }, [])
 
@@ -81,7 +94,7 @@ export default memo(function App() {
     
 
     useInput((input, key) => {
-        if (view !== "chat" || showContactModal) return
+        if (view !== "chat" || showContactModal || historyAsk) return
         if (input === "q" && focused !== "textbox") {
             exit();
         }
@@ -93,10 +106,21 @@ export default memo(function App() {
             setView("settings")
             return
         }
+        if (input === "g" && focused !== "textbox") {
+            setView("createGroup")
+            return
+        }
+        if (input === "i" && focused !== "textbox") {
+            if (contactInfo) {
+                setDetailsOpen((open) => !open)
+            }
+            return
+        }
         if (key.tab) {
             setFocus(prev => {
                 if (prev === "sidebar") return "main"
-                if (prev === "main") return "textbox"
+                if (prev === "main") return detailsOpen ? "details" : "textbox"
+                if (prev === "details") return "textbox"
                 if (prev === "textbox") return "sidebar"
                 else return "sidebar"
             })
@@ -147,6 +171,24 @@ export default memo(function App() {
                     <Box width={size.cols} height={size.rows} justifyContent="center" alignItems="center" flexDirection="column">
                         <SettingsForm onClose={() => setView("chat")} />
                     </Box>
+                ) : view === "createGroup" ? (
+                    <Box width={size.cols} height={size.rows} justifyContent="center" alignItems="center" flexDirection="column">
+                        <GroupCreateModal onDone={(groupId) => {
+                            setView("chat")
+                            if (groupId) {
+                                openChat(groupThreadKey(groupId))
+                                socketBus.emit("chats_changed")
+                            }
+                        }} />
+                    </Box>
+                ) : view === "members" && contactInfo ? (
+                    <Box width={size.cols} height={size.rows} justifyContent="center" alignItems="center" flexDirection="column">
+                        <GroupMembersModal groupId={groupIdFromThreadKey(contactInfo.peerId) ?? ""} onClose={() => setView("chat")} />
+                    </Box>
+                ) : view === "nicks" && contactInfo ? (
+                    <Box width={size.cols} height={size.rows} justifyContent="center" alignItems="center" flexDirection="column">
+                        <GroupNicksModal groupId={groupIdFromThreadKey(contactInfo.peerId) ?? ""} onClose={() => setView("chat")} />
+                    </Box>
                 ) : (
                     <Box width={size.cols} height={size.rows} alignItems="center" flexDirection="column">
                         <Text bold color={theme.roles.accent}>Yapr | {user ? user.user_id : ""} {online ? "●" : "○"}</Text>
@@ -154,8 +196,29 @@ export default memo(function App() {
                         <Box width={"100%"} flexGrow={1} alignItems="stretch" justifyContent="center" overflow="hidden">
                             <Sidebar focused={focused === "sidebar"} openPeerId={contactInfo?.peerId} setContactInfo={setContactInfo} onOpenBrowser={() => setView("contacts")}></Sidebar>
                             <MessagesBox focused={focused === "main"} contactInfo={contactInfo} availableHeight={availableHeight}/>
+                            {detailsOpen && contactInfo ? (
+                                <DetailsPane
+                                    threadKey={contactInfo.peerId}
+                                    focused={focused === "details"}
+                                    onClose={() => {
+                                        setDetailsOpen(false)
+                                        setFocus("main")
+                                    }}
+                                    onOpenMembers={() => setView("members")}
+                                    onOpenNicks={() => setView("nicks")}
+                                    setContactInfo={setContactInfo}
+                                />
+                            ) : null}
                         </Box>
                         <ChatInput focused={focused === "textbox"} onSubmit={handleTextSubmit} />
+                        {historyAsk && !showContactModal ? (
+                            <HistoryApproveModal
+                                groupId={historyAsk.groupId}
+                                requester={historyAsk.requester}
+                                armed={focused !== "textbox"}
+                                onClose={() => setHistoryAsk(undefined)}
+                            />
+                        ) : null}
                     </Box>
                 )
             }
