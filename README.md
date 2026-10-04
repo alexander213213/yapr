@@ -53,9 +53,23 @@ Keys:
   history is kept).
 - Thread: `↑/↓` scroll. Opening a thread marks it read (sends receipts). Every message
   shows its local time (`14:32 ✓✓`); older ones get a day prefix.
-- `s` opens Settings (nickname + what you reveal where). First run registers you
+- Composer: `Enter` sends, `Ctrl+J` inserts a newline (multiline drafts grow to 8 rows),
+  `Shift+Enter` also inserts a newline on terminals that report it.
+- `s` opens Settings (nickname + what you reveal where + theme). First run registers you
   automatically (identity key created locally) and identifies on every later start.
   Your numeric ID is in the header — share it so people can add you.
+
+## Formatting and themes
+
+Mark emphasis inline — it travels inside your encrypted text and renders in each
+reader's own theme, so everyone agrees on *what* is emphasized:
+
+- `$C1[...]`, `$C2[...]`, `$C3[...]` — three emphasis levels (strongest first)
+- `**bold**`, `` `code` `` — a lone `*` needs no escape; `\` escapes `$`, `*`, backtick
+- Unclosed markers render literally; no nesting in this version
+
+Pick a theme in Settings (`moss`, `amber`, `ocean`, `mono`). Every theme keeps the
+emphasis ramp ordered brightest-first, so `$C1` always outshines `$C3`.
 
 ## Contacts and keys
 
