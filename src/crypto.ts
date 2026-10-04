@@ -3,7 +3,6 @@ import fs from "node:fs";
 import { identityPathFor, resolveDataDir } from "./storage.js";
 
 export type Envelope = { ciphertext: string; nonce: string };
-export type OpenResult = { ok: true; text: string } | { ok: false };
 
 function b64urlToB64(s: string): string {
   return Buffer.from(s, "base64url").toString("base64");
@@ -100,15 +99,45 @@ function deriveMessageKey(
 const GCM_NONCE_LEN = 12;
 const GCM_TAG_LEN = 16;
 
+/** Inner payload version: `{ v: 1, nick, text }` as JSON. */
+const PAYLOAD_VERSION = 1;
+
+export type OpenResult = { ok: true; text: string; nick: string } | { ok: false };
+
+function encodePayload(nick: string, text: string): string {
+  return JSON.stringify({ v: PAYLOAD_VERSION, nick, text });
+}
+
+/** Decode a payload, accepting both current `{v,nick,text}` and legacy raw text. */
+function decodePayload(plaintext: string): { text: string; nick: string } {
+  try {
+    const parsed: unknown = JSON.parse(plaintext);
+    if (typeof parsed === "object" && parsed !== null) {
+      const obj = parsed as { v?: unknown; nick?: unknown; text?: unknown };
+      if (obj.v === PAYLOAD_VERSION) {
+        return {
+          text: typeof obj.text === "string" ? obj.text : plaintext,
+          nick: typeof obj.nick === "string" ? obj.nick : "",
+        };
+      }
+    }
+  } catch {
+    // Not JSON: pre-nick raw-text envelope from an older client.
+  }
+  return { text: plaintext, nick: "" };
+}
+
 /**
  * Seal plaintext for a peer: X25519 DH + HKDF-SHA256 + AES-256-GCM.
  * Static-static scheme per docs/CRYPTO.md (no forward secrecy — documented).
+ * The sender's nickname travels inside the encrypted payload (never metadata).
  */
 export function sealText(
   peerPubB64: string,
   senderId: string,
   recipientId: string,
-  text: string
+  text: string,
+  nick: string = ""
 ): Envelope {
   const shared = crypto.diffieHellman({
     privateKey: loadPrivateKey(),
@@ -117,7 +146,8 @@ export function sealText(
   const nonce = crypto.randomBytes(GCM_NONCE_LEN);
   const key = deriveMessageKey(shared, nonce, senderId, recipientId);
   const cipher = crypto.createCipheriv("aes-256-gcm", key, nonce);
-  const ciphertext = Buffer.concat([cipher.update(text, "utf8"), cipher.final()]);
+  const payload = encodePayload(nick, text);
+  const ciphertext = Buffer.concat([cipher.update(payload, "utf8"), cipher.final()]);
   const sealed = Buffer.concat([ciphertext, cipher.getAuthTag()]);
   return { ciphertext: sealed.toString("base64"), nonce: nonce.toString("base64") };
 }
@@ -125,7 +155,11 @@ export function sealText(
 /** Decode a pre-E2EE legacy envelope (empty nonce, base64 plaintext). */
 function openLegacy(envelope: Envelope): OpenResult {
   try {
-    return { ok: true, text: Buffer.from(envelope.ciphertext, "base64").toString("utf8") };
+    return {
+      ok: true,
+      text: Buffer.from(envelope.ciphertext, "base64").toString("utf8"),
+      nick: "",
+    };
   } catch {
     return { ok: false };
   }
@@ -156,11 +190,12 @@ export function openEnvelope(
     const key = deriveMessageKey(shared, nonce, senderId, ownId);
     const decipher = crypto.createDecipheriv("aes-256-gcm", key, nonce);
     decipher.setAuthTag(sealed.subarray(sealed.length - GCM_TAG_LEN));
-    const text = Buffer.concat([
+    const plaintext = Buffer.concat([
       decipher.update(sealed.subarray(0, sealed.length - GCM_TAG_LEN)),
       decipher.final(),
     ]).toString("utf8");
-    return { ok: true, text };
+    const { text, nick } = decodePayload(plaintext);
+    return { ok: true, text, nick };
   } catch {
     return { ok: false };
   }

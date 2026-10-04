@@ -30,13 +30,15 @@ export type SendRequest = {
   ciphertext: string;
   nonce: string;
   timestamp: number;
+  groupId?: string;
 };
 export function sendRequest(
   to: string,
   clientMessageId: string,
-  envelope: { ciphertext: string; nonce: string }
+  envelope: { ciphertext: string; nonce: string },
+  groupId?: string
 ): SendRequest {
-  return {
+  const req: SendRequest = {
     v: 2,
     type: "send",
     clientMessageId,
@@ -45,6 +47,8 @@ export function sendRequest(
     nonce: envelope.nonce,
     timestamp: Date.now(),
   };
+  if (groupId) req.groupId = groupId;
+  return req;
 }
 
 export type AckRequest = { v: 2; type: "ack"; messageId: string };
@@ -78,6 +82,58 @@ export function pongFrame(): PongFrame {
   return { v: 2, type: "pong" };
 }
 
+export type CreateGroupRequest = { v: 2; type: "create_group"; name: string; memberIds: string[] };
+export function createGroupRequest(name: string, memberIds: string[]): CreateGroupRequest {
+  return { v: 2, type: "create_group", name, memberIds };
+}
+
+export type AddMembersRequest = { v: 2; type: "add_members"; groupId: string; userIds: string[] };
+export function addMembersRequest(groupId: string, userIds: string[]): AddMembersRequest {
+  return { v: 2, type: "add_members", groupId, userIds };
+}
+
+export type RemoveMemberRequest = { v: 2; type: "remove_member"; groupId: string; userId: string };
+export function removeMemberRequest(groupId: string, userId: string): RemoveMemberRequest {
+  return { v: 2, type: "remove_member", groupId, userId };
+}
+
+export type LeaveGroupRequest = { v: 2; type: "leave_group"; groupId: string };
+export function leaveGroupRequest(groupId: string): LeaveGroupRequest {
+  return { v: 2, type: "leave_group", groupId };
+}
+
+export type RenameGroupRequest = { v: 2; type: "rename_group"; groupId: string; name: string };
+export function renameGroupRequest(groupId: string, name: string): RenameGroupRequest {
+  return { v: 2, type: "rename_group", groupId, name };
+}
+
+export type FetchGroupsRequest = { v: 2; type: "fetch_groups" };
+export function fetchGroupsRequest(): FetchGroupsRequest {
+  return { v: 2, type: "fetch_groups" };
+}
+
+export type GroupEnvelopeInput = { to: string; ciphertext: string; nonce: string };
+export type SendGroupRequest = {
+  v: 2;
+  type: "send_group";
+  clientMessageId: string;
+  groupId: string;
+  envelopes: GroupEnvelopeInput[];
+  timestamp: number;
+};
+export function sendGroupRequest(
+  groupId: string,
+  clientMessageId: string,
+  envelopes: GroupEnvelopeInput[]
+): SendGroupRequest {
+  return { v: 2, type: "send_group", clientMessageId, groupId, envelopes, timestamp: Date.now() };
+}
+
+export type RequestHistoryRequest = { v: 2; type: "request_history"; groupId: string; to: string };
+export function requestHistoryRequest(groupId: string, to: string): RequestHistoryRequest {
+  return { v: 2, type: "request_history", groupId, to };
+}
+
 // --- server -> client parsers (validated; unknown frames rejected) ---
 
 const RegisteredFrame = z.object({
@@ -103,6 +159,7 @@ const ServerAckFrame = z.object({
   type: z.literal("server_ack"),
   clientMessageId: z.string().min(1).max(128),
   messageId: z.string().min(1).max(128),
+  messageIds: z.array(z.string().min(1).max(128)).optional(),
   status: z.literal("accepted"),
   timestamp: z.number().int().nonnegative(),
 });
@@ -116,6 +173,7 @@ const IncomingFrame = z.object({
   ciphertext: z.string().max(32 * 1024),
   nonce: z.string().max(128),
   timestamp: z.number().int().nonnegative(),
+  groupId: z.string().min(1).max(128).optional(),
 });
 export type IncomingFrame = z.infer<typeof IncomingFrame>;
 
@@ -137,6 +195,7 @@ export const ErrorCode = z.enum([
   "INVALID",
   "UNAUTH",
   "NOT_FOUND",
+  "OFFLINE",
   "RATE_LIMITED",
   "TOO_LARGE",
   "UPGRADE_REQUIRED",
@@ -151,6 +210,48 @@ const ErrorFrame = z.object({
 });
 export type ErrorFrame = z.infer<typeof ErrorFrame>;
 
+const GroupMemberFrame = z.object({
+  userId: userIdField,
+  role: z.enum(["admin", "member"]),
+  joinedAt: z.number().int().nonnegative(),
+});
+
+const GroupInfoFrame = z.object({
+  groupId: z.string().min(1).max(128),
+  name: z.string().min(1).max(64),
+  members: z.array(GroupMemberFrame),
+});
+export type GroupInfoFrame = z.infer<typeof GroupInfoFrame>;
+
+const GroupsFrame = z.object({
+  v,
+  type: z.literal("groups"),
+  groups: z.array(GroupInfoFrame),
+});
+export type GroupsFrame = z.infer<typeof GroupsFrame>;
+
+const GroupCreatedFrame = z.object({
+  v,
+  type: z.literal("group_created"),
+  groupId: z.string().min(1).max(128),
+});
+export type GroupCreatedFrame = z.infer<typeof GroupCreatedFrame>;
+
+const GroupUpdatedFrame = z.object({
+  v,
+  type: z.literal("group_updated"),
+  groupId: z.string().min(1).max(128),
+});
+export type GroupUpdatedFrame = z.infer<typeof GroupUpdatedFrame>;
+
+const HistoryRequestFrame = z.object({
+  v,
+  type: z.literal("history_request"),
+  groupId: z.string().min(1).max(128),
+  requester: userIdField,
+});
+export type HistoryRequestFrame = z.infer<typeof HistoryRequestFrame>;
+
 export const ServerFrame = z.discriminatedUnion("type", [
   RegisteredFrame,
   IdentifiedFrame,
@@ -161,6 +262,10 @@ export const ServerFrame = z.discriminatedUnion("type", [
   ReadReceiptFrame,
   PingFrame,
   ErrorFrame,
+  GroupsFrame,
+  GroupCreatedFrame,
+  GroupUpdatedFrame,
+  HistoryRequestFrame,
 ]);
 export type ServerFrame = z.infer<typeof ServerFrame>;
 

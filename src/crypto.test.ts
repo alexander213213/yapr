@@ -41,7 +41,7 @@ describe("seal/open (X25519 + AES-GCM)", () => {
     const ab = sealText(pubB, "alice", "bob", "hello bob");
     expect(ab.nonce).not.toBe("");
     useDir("b");
-    expect(openEnvelope(pubA, "bob", "alice", ab)).toEqual({ ok: true, text: "hello bob" });
+    expect(openEnvelope(pubA, "bob", "alice", ab)).toEqual({ ok: true, text: "hello bob", nick: "" });
 
     // Direction separation: opening an A->B envelope as B->A fails.
     expect(openEnvelope(pubB, "alice", "bob", ab)).toEqual({ ok: false });
@@ -49,7 +49,19 @@ describe("seal/open (X25519 + AES-GCM)", () => {
     useDir("b");
     const ba = sealText(pubA, "bob", "alice", "hi alice");
     useDir("a");
-    expect(openEnvelope(pubB, "alice", "bob", ba)).toEqual({ ok: true, text: "hi alice" });
+    expect(openEnvelope(pubB, "alice", "bob", ba)).toEqual({ ok: true, text: "hi alice", nick: "" });
+  });
+
+  it("carries the sender nickname inside the encrypted payload", () => {
+    useDir("a");
+    const pubA = loadOrCreateIdentity().publicKeyB64;
+    const env = sealText(pubA, "alice", "alice", "hey", "Al");
+    useDir("a");
+    expect(openEnvelope(pubA, "alice", "alice", env)).toEqual({
+      ok: true,
+      text: "hey",
+      nick: "Al",
+    });
   });
 
   it("produces opaque ciphertext (no plaintext leak)", () => {
@@ -82,7 +94,7 @@ describe("seal/open (X25519 + AES-GCM)", () => {
 
   it("decodes legacy empty-nonce envelopes as plaintext", () => {
     const legacy = { ciphertext: Buffer.from("hello legacy", "utf8").toString("base64"), nonce: "" };
-    expect(openEnvelope(null, "bob", "alice", legacy)).toEqual({ ok: true, text: "hello legacy" });
+    expect(openEnvelope(null, "bob", "alice", legacy)).toEqual({ ok: true, text: "hello legacy", nick: "" });
   });
 
   it("exports a placeholder constant", () => {
