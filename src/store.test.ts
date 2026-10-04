@@ -14,13 +14,18 @@ const UID = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 
 const {
   addNewContact,
+  closeChat,
   deleteContact,
   findContact,
   getAllContacts,
+  getOpenChats,
+  getSetting,
   getUnreadCounts,
   insertIncomingMessage,
   insertPendingMessage,
   markThreadRead,
+  openChat,
+  setSetting,
 } = await import("./store.js");
 
 describe("store threads", () => {
@@ -71,5 +76,27 @@ describe("store threads", () => {
     expect(getAllContacts().some((c) => c.peer_id === id)).toBe(false);
     // History survives the deletion.
     expect(getUnreadCounts()[id]).toBe(1);
+  });
+
+  it("tracks open chats separately from contacts", () => {
+    const id = `chat-${UID}`;
+    addNewContact(id, `Chatter ${UID}`);
+    expect(getOpenChats().some((c) => c.peer_id === id)).toBe(false);
+    openChat(id);
+    expect(getOpenChats().some((c) => c.peer_id === id)).toBe(true);
+    expect(closeChat(id)).toBe(true);
+    expect(closeChat(id)).toBe(false);
+    expect(getOpenChats().some((c) => c.peer_id === id)).toBe(false);
+    // Contact itself is untouched.
+    expect(findContact(id)?.alias).toBe(`Chatter ${UID}`);
+  });
+
+  it("reads and writes settings with shipped defaults", () => {
+    expect(getSetting("nickname")).toBe("");
+    expect(getSetting("share_nickname_gcs")).toBe("1");
+    expect(getSetting("share_nickname_dms")).toBe("0");
+    expect(getSetting("theme")).toBe("moss");
+    setSetting("nickname", "tester");
+    expect(getSetting("nickname")).toBe("tester");
   });
 });

@@ -4,9 +4,11 @@ import MessagesBox from "./messages.js";
 import { Focus, ContactInfo, UserRow } from "./types.js";
 import Sidebar from "./sidebar.js";
 import ContactsModal from "./contactsModal.js";
+import ContactsBrowser from "./contactsBrowser.js";
+import SettingsForm from "./settingsForm.js";
 import ChatInput from "./inputBox.js";
 import { socketBus } from "./eventStore.js";
-import { findUserStmt } from "./store.js";
+import { findUserStmt, openChat } from "./store.js";
 
 
 
@@ -24,10 +26,12 @@ export default memo(function App() {
         cols: stdout.columns,
         rows: stdout.rows
     })
-    const [showContactModal, setShowContactModal] = useState(false)
+    const [showContactModal, setShowModal] = useState(false)
     const [mode, setMode] = useState<"add" | "edit">("add")
     const [online, setOnline] = useState(false)
     const [lastError, setLastError] = useState<string | undefined>()
+    const [view, setView] = useState<"chat" | "contacts" | "settings">("chat")
+    const [modalReturnView, setModalReturnView] = useState<"chat" | "contacts">("chat")
     const availableHeight = size.rows - 1 - 3
 
 
@@ -75,10 +79,19 @@ export default memo(function App() {
     
 
     useInput((input, key) => {
-        if (input === "q" && focused !== "textbox" && !showContactModal) {
+        if (view !== "chat" || showContactModal) return
+        if (input === "q" && focused !== "textbox") {
             exit();
         }
-        if (key.tab && !showContactModal) {
+        if (input === "c" && focused !== "textbox") {
+            setView("contacts")
+            return
+        }
+        if (input === "s" && focused !== "textbox") {
+            setView("settings")
+            return
+        }
+        if (key.tab) {
             setFocus(prev => {
                 if (prev === "sidebar") return "main"
                 if (prev === "main") return "textbox"
@@ -88,22 +101,56 @@ export default memo(function App() {
         }
     });
 
+    const closeModal = () => {
+        setShowModal(false)
+        setView(modalReturnView)
+    }
+
+    const openBrowserChat = (peerId: string, alias: string | null) => {
+        openChat(peerId)
+        socketBus.emit("chats_changed")
+        setContactInfo({ alias: alias ?? peerId, peerId })
+        setView("chat")
+    }
+
     return (
         <>
             {
                 showContactModal && (mode === "add" || contactInfo) ? (<Box width={size.cols} height={size.rows} justifyContent="center" alignItems="center" flexDirection="column">
                     {mode === "add" ? (
-                        <ContactsModal mode={mode} setShowModal={setShowContactModal}></ContactsModal>
+                        <ContactsModal mode={mode} setShowModal={closeModal}></ContactsModal>
                     ) : contactInfo ? (
-                        <ContactsModal mode={mode} setShowModal={setShowContactModal} contactInfo={contactInfo}></ContactsModal>
+                        <ContactsModal mode={mode} setShowModal={closeModal} contactInfo={contactInfo}></ContactsModal>
                     ) : null}
                 </Box>
+                ) : view === "contacts" ? (
+                    <Box width={size.cols} height={size.rows} justifyContent="center" alignItems="center" flexDirection="column">
+                        <ContactsBrowser
+                            onClose={() => setView("chat")}
+                            onChat={(c) => openBrowserChat(c.peer_id, c.alias)}
+                            onEdit={(c) => {
+                                setContactInfo({ alias: c.alias ?? c.peer_id, peerId: c.peer_id })
+                                setMode("edit")
+                                setModalReturnView("contacts")
+                                setShowModal(true)
+                            }}
+                            onAdd={() => {
+                                setMode("add")
+                                setModalReturnView("contacts")
+                                setShowModal(true)
+                            }}
+                        />
+                    </Box>
+                ) : view === "settings" ? (
+                    <Box width={size.cols} height={size.rows} justifyContent="center" alignItems="center" flexDirection="column">
+                        <SettingsForm onClose={() => setView("chat")} />
+                    </Box>
                 ) : (
                     <Box width={size.cols} height={size.rows} alignItems="center" flexDirection="column">
                         <Text bold color={"#9a9e3f"}>Yapr | {user ? user.user_id : ""} {online ? "●" : "○"}</Text>
                         {lastError ? <Text color="red">{lastError}</Text> : null}
                         <Box width={"100%"} flexGrow={1} alignItems="stretch" justifyContent="center" overflow="hidden">
-                            <Sidebar focused={focused === "sidebar"} openPeerId={contactInfo?.peerId} setContactInfo={setContactInfo} setShowModal={setShowContactModal} setMode={setMode}></Sidebar>
+                            <Sidebar focused={focused === "sidebar"} openPeerId={contactInfo?.peerId} setContactInfo={setContactInfo} onOpenBrowser={() => setView("contacts")}></Sidebar>
                             <MessagesBox focused={focused === "main"} contactInfo={contactInfo} availableHeight={availableHeight}/>
                         </Box>
                         <ChatInput focused={focused === "textbox"} onSubmit={handleTextSubmit} />
