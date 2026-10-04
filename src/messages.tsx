@@ -5,6 +5,7 @@ import { MessageRow, ServerAckFrame, MessageStatus } from "./types.js";
 import cliBoxes from "cli-boxes";
 import { getAllMessagesByPeerId, insertPendingMessage, markThreadRead } from "./store.js";
 import { sendChatText, sendReadReceipt } from "./client.js";
+import { formatMessageTime } from "./format.js";
 import { socketBus } from "./eventStore.js";
 
 export type Line = {
@@ -15,6 +16,7 @@ export type Line = {
     isLastLine: boolean;
     longest: number;
     status: MessageStatus
+    createdAt: number
     lineIndex: number
 };
 
@@ -277,20 +279,17 @@ function linesToBubbles(lines: Line[]) {
                 lineIndex: "x",
                 type: "bottom"
             })
-            // Delivery status lives on its own dim line under the bubble so the
-            // content width (and borders) never shift.
-            if (line.direction === "out") {
-                const glyph = statusGlyph(line.status)
-                if (glyph) {
-                    result.push({
-                        text: (<Text dimColor>{glyph}</Text>),
-                        direction: line.direction,
-                        messageId: line.messageId,
-                        lineIndex: "s",
-                        type: "status",
-                    })
-                }
-            }
+            // Timestamp (+ delivery tick for outbound) lives on its own dim line
+            // under the bubble so content width (and borders) never shift.
+            const glyph = line.direction === "out" ? statusGlyph(line.status) : ""
+            const meta = glyph ? `${formatMessageTime(line.createdAt)} ${glyph}` : formatMessageTime(line.createdAt)
+            result.push({
+                text: (<Text dimColor>{meta}</Text>),
+                direction: line.direction,
+                messageId: line.messageId,
+                lineIndex: "s",
+                type: "status",
+            })
         }
         return result
     })
@@ -309,6 +308,7 @@ function messagesToLines(message: MessageRow, maxWidth: number) {
             isFirstLine: index === 0,
             isLastLine: arr.length - 1 === index,
             status: message.status,
+            createdAt: message.created_at,
             longest: longest,
             lineIndex: index
         } as Line

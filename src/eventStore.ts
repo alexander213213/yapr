@@ -12,6 +12,8 @@ export type BusEvents = {
   incoming_message: [msg: MessageRow];
   /** Unknown sender auto-added (refresh sidebar). */
   new_contact: [];
+  /** Sidebar membership changed (open/close/delete). */
+  chats_changed: [];
   /** Session identified (outbox flush done elsewhere; UI refresh). */
   identified: [];
   /** Transport state for the header. */

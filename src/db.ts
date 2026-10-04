@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
 import { dbPathFor, ensureDataDir } from "./storage.js";
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 // Tests must isolate storage explicitly: static imports evaluate before any
 // test-body env assignment, so an unset dir under Vitest would silently open
@@ -68,6 +68,16 @@ db.exec(`
     updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
   );
 
+  CREATE TABLE IF NOT EXISTS open_chats (
+    peer_id TEXT PRIMARY KEY,
+    opened_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
+  );
+
+  CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
+
   CREATE INDEX IF NOT EXISTS idx_messages_peer_time
   ON messages (peer_id, created_at);
 
@@ -128,6 +138,28 @@ if (version === 1) {
   `);
   db.prepare(`UPDATE schema_version SET version = ?`).run(2);
   version = 2;
+}
+
+if (version === 2) {
+  // v2 -> v3: open chats (sidebar membership separate from contacts) plus
+  // local settings (nickname, reveal toggles, theme). Pure additions.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS open_chats (
+      peer_id TEXT PRIMARY KEY,
+      opened_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
+    );
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+  `);
+  // Existing contacts with threads become open chats (preserve current UX).
+  db.exec(`
+    INSERT OR IGNORE INTO open_chats (peer_id, opened_at)
+    SELECT DISTINCT peer_id, MIN(created_at) FROM messages GROUP BY peer_id
+  `);
+  db.prepare(`UPDATE schema_version SET version = ?`).run(SCHEMA_VERSION);
+  version = SCHEMA_VERSION;
 }
 
 if (version !== SCHEMA_VERSION) {

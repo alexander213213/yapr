@@ -49,6 +49,22 @@ const deleteContactStmt = db.prepare(`
     DELETE FROM contacts WHERE peer_id = ?
 `);
 
+const openChatStmt = db.prepare(`
+    INSERT OR IGNORE INTO open_chats (peer_id, opened_at) VALUES (?, ?)
+`);
+
+const closeChatStmt = db.prepare(`
+    DELETE FROM open_chats WHERE peer_id = ?
+`);
+
+const findOpenChatsStmt = db.prepare(`
+    SELECT c.peer_id, c.alias, o.opened_at
+    FROM open_chats o JOIN contacts c ON c.peer_id = o.peer_id
+    ORDER BY o.opened_at ASC, o.peer_id ASC
+`);
+
+export type OpenChatRow = ContactsRow & { opened_at: number };
+
 const insertPendingMessageStmt = db.prepare(`
     INSERT INTO messages (peer_id, direction, client_message_id, text, status, created_at)
     VALUES (?, 'out', ?, ?, 'pending', ?)
@@ -101,6 +117,29 @@ const upsertPeerKeyStmt = db.prepare(`
 `);
 
 export const OUTBOX_BATCH_LIMIT = 100;
+
+const getSettingStmt = db.prepare(`SELECT value FROM settings WHERE key = ?`);
+const setSettingStmt = db.prepare(`
+    INSERT INTO settings (key, value) VALUES (?, ?)
+    ON CONFLICT (key) DO UPDATE SET value = excluded.value
+`);
+
+export const DEFAULT_SETTINGS = {
+  nickname: "",
+  share_nickname_gcs: "1",
+  share_nickname_dms: "0",
+  theme: "moss",
+} as const;
+export type SettingKey = keyof typeof DEFAULT_SETTINGS;
+
+export function getSetting(key: SettingKey): string {
+  const row = getSettingStmt.get(key) as { value: string } | undefined;
+  return row?.value ?? DEFAULT_SETTINGS[key];
+}
+
+export function setSetting(key: SettingKey, value: string): void {
+  setSettingStmt.run(key, value);
+}
 
 /**
  * node:sqlite reports constraint violations via numeric `errcode`
@@ -208,9 +247,26 @@ export function insertIncomingMessage(
 
 /** Returns true when the sender was previously unknown (caller refreshes UI). */
 export function ensureContact(from: string): boolean {
-  if (findContact(from)) return false;
-  insertUnknownContactStmt.run(from);
-  return true;
+  const isNew = !findContact(from);
+  if (isNew) {
+    insertUnknownContactStmt.run(from);
+  }
+  // Unknown senders land straight in the sidebar, as before.
+  openChatStmt.run(from, Date.now());
+  return isNew;
+}
+
+/** Sidebar membership, separate from contacts. */
+export function openChat(peerId: string): void {
+  openChatStmt.run(peerId, Date.now());
+}
+
+export function closeChat(peerId: string): boolean {
+  return Number(closeChatStmt.run(peerId).changes) > 0;
+}
+
+export function getOpenChats(): OpenChatRow[] {
+  return findOpenChatsStmt.all() as OpenChatRow[];
 }
 
 export function getPeerKey(userId: string): string | null {
@@ -273,5 +329,6 @@ export function updateContact(
  */
 export function deleteContact(peerId: string): boolean {
   const info = deleteContactStmt.run(peerId);
+  closeChatStmt.run(peerId);
   return Number(info.changes) > 0;
 }
