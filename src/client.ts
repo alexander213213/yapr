@@ -1,14 +1,26 @@
 import tls from "node:tls";
 import fs from "node:fs";
+import { randomUUID } from "node:crypto";
 import {
   ackRequest,
+  addMembersRequest,
+  createGroupRequest,
+  fetchGroupsRequest,
   fetchKeysRequest,
   identifyRequest,
+  leaveGroupRequest,
   parseServerFrame,
   pongFrame,
   readRequest,
   registerRequest,
+  removeMemberRequest,
+  renameGroupRequest,
+  requestHistoryRequest,
+  sendGroupRequest,
   sendRequest,
+  type GroupCreatedFrame,
+  type GroupsFrame,
+  type IncomingFrame,
   type KeysFrame,
   type ServerAckFrame,
   type ServerFrame,
@@ -57,6 +69,8 @@ class YaprClient {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private keysChain: Promise<void> = Promise.resolve();
   private keysWaiter: ((keys: Record<string, string>) => void) | null = null;
+  private groupsWaiter: ((groups: GroupsFrame) => void) | null = null;
+  private groupCreatedWaiter: ((created: GroupCreatedFrame) => void) | null = null;
 
   get online(): boolean {
     return this.state === "online";
@@ -194,7 +208,7 @@ class YaprClient {
         break;
       case "identified":
         socketBus.emit("identified");
-        void this.flushOutbox();
+        void this.syncAfterIdentify();
         break;
       case "keys":
         this.resolveKeys(frame);
@@ -215,6 +229,18 @@ class YaprClient {
       case "ping":
         this.sendFrame(pongFrame());
         break;
+      case "groups":
+        this.resolveGroups(frame);
+        break;
+      case "group_created":
+        this.resolveGroupCreated(frame);
+        break;
+      case "group_updated":
+        void this.refreshGroups();
+        break;
+      case "history_request":
+        socketBus.emit("history_request", frame);
+        break;
       case "error":
         socketBus.emit("server_error", frame);
         break;
@@ -225,6 +251,62 @@ class YaprClient {
     const waiter = this.keysWaiter;
     this.keysWaiter = null;
     if (waiter) waiter(frame.keys);
+  }
+
+  private resolveGroups(frame: GroupsFrame): void {
+    const waiter = this.groupsWaiter;
+    this.groupsWaiter = null;
+    if (waiter) waiter(frame);
+  }
+
+  private resolveGroupCreated(frame: GroupCreatedFrame): void {
+    const waiter = this.groupCreatedWaiter;
+    this.groupCreatedWaiter = null;
+    if (waiter) waiter(frame);
+  }
+
+  /** After identify: refresh group membership first (flush may target groups). */
+  private async syncAfterIdentify(): Promise<void> {
+    try {
+      await this.refreshGroups();
+    } catch {
+      // Offline races resolve on reconnect; keep going.
+    }
+    await this.flushOutbox();
+  }
+
+  /** Pull the membership snapshot into the local cache. */
+  async refreshGroups(): Promise<void> {
+    if (!this.online) throw new Error("offline");
+    const frame = await new Promise<GroupsFrame>((resolve, reject) => {
+      if (!this.sendFrame(fetchGroupsRequest())) {
+        reject(new Error("offline"));
+        return;
+      }
+      this.groupsWaiter = resolve;
+      const timer = setTimeout(() => {
+        if (this.groupsWaiter) {
+          this.groupsWaiter = null;
+          reject(new Error("groups lookup timed out"));
+        }
+      }, KEYS_TIMEOUT_MS);
+      if (timer.unref) timer.unref();
+    });
+    const seen = new Set<string>();
+    for (const g of frame.groups) {
+      seen.add(g.groupId);
+      store.upsertGroupCache(
+        g.groupId,
+        g.name,
+        g.members.map((m) => ({ user_id: m.userId, role: m.role, joined_at: m.joinedAt }))
+      );
+    }
+    for (const cached of store.listGroupCache()) {
+      if (!seen.has(cached.groupId)) {
+        store.dropGroupCache(cached.groupId);
+      }
+    }
+    socketBus.emit("groups_changed");
   }
 
   /** Fetch missing pubkeys (cached in store). Serialized; concurrent callers queue. */
@@ -276,14 +358,43 @@ class YaprClient {
     return key;
   }
 
-  /** Seal + transmit one message. Throws when offline or keyless (row stays pending). */
-  async sendChatText(to: string, clientMessageId: string, text: string): Promise<void> {
+  /** Seal + transmit one DM (or group-tagged share). Throws when offline or
+   *  keyless (row stays pending). Nicknames ride inside the envelope. */
+  async sendChatText(
+    to: string,
+    clientMessageId: string,
+    text: string,
+    groupId?: string
+  ): Promise<void> {
     const user = store.getSessionUser();
     if (!user) throw new Error("not registered");
     if (!this.online) throw new Error("offline");
     const keys = await this.requestKeys([to]);
-    const envelope = sealText(this.peerKeyOrThrow(to, keys), user.user_id, to, text);
-    if (!this.sendFrame(sendRequest(to, clientMessageId, envelope))) {
+    const nick = store.nickForContext(groupId ?? null, user.user_id);
+    const envelope = sealText(this.peerKeyOrThrow(to, keys), user.user_id, to, text, nick);
+    if (!this.sendFrame(sendRequest(to, clientMessageId, envelope, groupId))) {
+      throw new Error("offline");
+    }
+  }
+
+  /** Seal to every current member and fan out with one shared clientMessageId. */
+  async sendGroupText(groupId: string, clientMessageId: string, text: string): Promise<void> {
+    const user = store.getSessionUser();
+    if (!user) throw new Error("not registered");
+    if (!this.online) throw new Error("offline");
+    let members = store.getGroupMembers(groupId).filter((m) => m.user_id !== user.user_id);
+    if (members.length === 0) {
+      await this.refreshGroups();
+      members = store.getGroupMembers(groupId).filter((m) => m.user_id !== user.user_id);
+    }
+    if (members.length === 0) throw new Error("not a group member");
+    const keys = await this.requestKeys(members.map((m) => m.user_id));
+    const nick = store.nickForContext(groupId, user.user_id);
+    const envelopes = members.map((m) => ({
+      to: m.user_id,
+      ...sealText(this.peerKeyOrThrow(m.user_id, keys), user.user_id, m.user_id, text, nick),
+    }));
+    if (!this.sendFrame(sendGroupRequest(groupId, clientMessageId, envelopes))) {
       throw new Error("offline");
     }
   }
@@ -293,20 +404,76 @@ class YaprClient {
     for (const row of store.getPendingOutbox()) {
       if (!this.online || !row.client_message_id) break;
       try {
-        await this.sendChatText(row.peer_id, row.client_message_id, row.text);
+        if (row.group_id) {
+          await this.sendGroupText(
+            row.group_id,
+            row.client_message_id,
+            row.text
+          );
+        } else {
+          await this.sendChatText(row.peer_id, row.client_message_id, row.text);
+        }
       } catch {
         break;
       }
     }
   }
 
-  private async handleIncoming(frame: {
-    from: string;
-    messageId: string;
-    ciphertext: string;
-    nonce: string;
-    timestamp: number;
-  }): Promise<void> {
+  /** Share recent thread history with a member (explicit approval only — G3 UI). */
+  async shareHistory(groupId: string, toUserId: string, limit: number = 20): Promise<number> {
+    const user = store.getSessionUser();
+    if (!user) throw new Error("not registered");
+    const rows = store.getGroupMessages(groupId).slice(-limit);
+    let shared = 0;
+    for (const row of rows) {
+      if (row.text === UNREADABLE_PLACEHOLDER) continue;
+      await this.sendChatText(toUserId, randomUUID(), row.text, groupId);
+      shared += 1;
+    }
+    return shared;
+  }
+
+  async createGroup(name: string, memberIds: string[]): Promise<string> {
+    if (!this.online) throw new Error("offline");
+    const created = await new Promise<GroupCreatedFrame>((resolve, reject) => {
+      if (!this.sendFrame(createGroupRequest(name, memberIds))) {
+        reject(new Error("offline"));
+        return;
+      }
+      this.groupCreatedWaiter = resolve;
+      const timer = setTimeout(() => {
+        if (this.groupCreatedWaiter) {
+          this.groupCreatedWaiter = null;
+          reject(new Error("create group timed out"));
+        }
+      }, KEYS_TIMEOUT_MS);
+      if (timer.unref) timer.unref();
+    });
+    await this.refreshGroups();
+    return created.groupId;
+  }
+
+  addMembers(groupId: string, userIds: string[]): void {
+    this.sendFrame(addMembersRequest(groupId, userIds));
+  }
+
+  removeMember(groupId: string, userId: string): void {
+    this.sendFrame(removeMemberRequest(groupId, userId));
+  }
+
+  leaveGroup(groupId: string): void {
+    this.sendFrame(leaveGroupRequest(groupId));
+  }
+
+  renameGroup(groupId: string, name: string): void {
+    this.sendFrame(renameGroupRequest(groupId, name));
+  }
+
+  requestGroupHistory(groupId: string, toUserId: string): void {
+    this.sendFrame(requestHistoryRequest(groupId, toUserId));
+  }
+
+  private async handleIncoming(frame: IncomingFrame): Promise<void> {
     const user = store.getSessionUser();
     let senderKey: string | null = store.getPeerKey(frame.from);
     if (!senderKey) {
@@ -322,8 +489,26 @@ class YaprClient {
       nonce: frame.nonce,
     });
     const text = opened.ok ? opened.text : UNREADABLE_PLACEHOLDER;
-    const stored = store.insertIncomingMessage(frame.from, frame.messageId, text, frame.timestamp);
-    if (store.ensureContact(frame.from)) {
+    const nick = opened.ok ? opened.nick : "";
+    const stored = store.insertIncomingMessage(
+      frame.from,
+      frame.messageId,
+      text,
+      frame.timestamp,
+      frame.groupId,
+      nick
+    );
+    if (frame.groupId) {
+      // Group mail files into the group thread; ensure membership is known.
+      if (!store.getGroupCache(frame.groupId)) {
+        try {
+          await this.refreshGroups();
+        } catch {
+          // Best effort; the next snapshot heals it.
+        }
+      }
+      store.openChat(store.groupThreadKey(frame.groupId));
+    } else if (store.ensureContact(frame.from)) {
       socketBus.emit("new_contact");
     }
     if (stored.inserted) {
@@ -332,6 +517,8 @@ class YaprClient {
         peer_id: frame.from,
         direction: "in",
         message_id: frame.messageId,
+        group_id: frame.groupId ?? null,
+        sender_nick: nick || null,
         text,
         created_at: frame.timestamp,
         status: "received",
@@ -351,8 +538,13 @@ export const client = new YaprClient();
 export type { ServerAckFrame };
 
 /** Module-level send used by the outbox UI. */
-export function sendChatText(to: string, clientMessageId: string, text: string): Promise<void> {
-  return client.sendChatText(to, clientMessageId, text);
+export function sendChatText(
+  to: string,
+  clientMessageId: string,
+  text: string,
+  groupId?: string
+): Promise<void> {
+  return client.sendChatText(to, clientMessageId, text, groupId);
 }
 
 /** Module-level read receipt used by thread views. */

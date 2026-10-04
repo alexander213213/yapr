@@ -22,6 +22,8 @@ export type MessageRow = {
   direction: MessageDirection;
   client_message_id?: string | null;
   message_id?: string | null;
+  group_id?: string | null;
+  sender_nick?: string | null;
   text: string;
   created_at: number;
   status: MessageStatus;
