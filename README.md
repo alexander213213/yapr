@@ -48,18 +48,27 @@ npm run dev    # tsx + TUI
 Keys:
 
 - `Tab` cycles sidebar → thread → textbox. `q` quits (outside the textbox).
-- Sidebar: `↑/↓` move, `→`/`Enter` open, `←` edit contact, select `+ Add New Contact`.
-- Thread: `↑/↓` scroll. Opening a thread marks it read (sends receipts).
-- First run registers you automatically (identity key created locally) and identifies
-  on every later start. Your numeric ID is in the header — share it so people can add you.
+- Sidebar (open chats): `↑/↓` move, `→`/`Enter` open, `c` or `≡ Contacts…` opens the
+  browser, `x` closes a chat (stays a contact), `d` deletes a contact (two-step confirm,
+  history is kept).
+- Thread: `↑/↓` scroll. Opening a thread marks it read (sends receipts). Every message
+  shows its local time (`14:32 ✓✓`); older ones get a day prefix.
+- `s` opens Settings (nickname + what you reveal where). First run registers you
+  automatically (identity key created locally) and identifies on every later start.
+  Your numeric ID is in the header — share it so people can add you.
 
 ## Contacts and keys
 
-Add contacts by their server user ID with any alias you like (IDs can't be renamed
-later — they anchor history; aliases can). Unknown senders appear automatically so
-replies just work. Public keys are fetched from the server directory on demand and
-cached locally; if a message can't be decrypted you see
-`[encrypted message — update yapr to read it]` instead of garbage.
+The sidebar holds **open chats**; **Contacts** (`c`) holds everyone. There you can start
+a chat, rename, delete, or add by ID. Add contacts by their server user ID with any
+alias you like (IDs can't be renamed later — they anchor history; aliases can).
+Unknown senders appear automatically so replies just work. Public keys are fetched
+from the server directory on demand and cached locally; if a message can't be
+decrypted you see `[encrypted message — update yapr to read it]` instead of garbage.
+
+Your **nickname** and reveal toggles (Settings, `s`) are stored locally in preparation
+for group chats: the nickname will travel inside your encrypted envelopes — never
+visible to the server — once groups land. Until then they change nothing.
 
 ## Troubleshooting
 
