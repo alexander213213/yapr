@@ -101,6 +101,13 @@ db.exec(`
     PRIMARY KEY (group_id, user_id)
   );
 
+  CREATE TABLE IF NOT EXISTS message_reads (
+    message_id TEXT NOT NULL,
+    reader_id TEXT NOT NULL,
+    read_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000),
+    PRIMARY KEY (message_id, reader_id)
+  );
+
   CREATE TABLE IF NOT EXISTS open_chats (
     peer_id TEXT PRIMARY KEY,
     opened_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)

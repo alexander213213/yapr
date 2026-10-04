@@ -1,20 +1,26 @@
 import { Box, Text, useInput } from "ink";
 import SelectInput from "ink-select-input";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
-import { closeChat, deleteContact, getOpenChats, getUnreadCounts } from "./store.js";
+import {
+  closeChat,
+  deleteContact,
+  dropGroupCache,
+  getOpenThreads,
+  groupIdFromThreadKey,
+  type OpenThread,
+} from "./store.js";
 import { getTheme } from "./themes.js";
 import { socketBus } from "./eventStore.js";
-import type { OpenChatRow } from "./store.js";
+import { client } from "./client.js";
 
 type ListItem = {label: string, value: string}
 
-function toItems(chats: OpenChatRow[], unread: Record<string, number>): ListItem[] {
-    const items = chats.map((chat) => {
-        const name = chat.alias ?? chat.peer_id;
-        const count = unread[chat.peer_id] ?? 0;
+function toItems(threads: OpenThread[]): ListItem[] {
+    const items = threads.map((t) => {
+        const name = t.kind === "group" ? `◈ ${t.label}` : t.label;
         return {
-            label: count > 0 ? `${name} (${count})` : name,
-            value: chat.peer_id
+            label: t.unread > 0 ? `${name} (${t.unread})` : name,
+            value: t.key
         }
     })
     items.unshift({label: "≡ Contacts…", value: "::contacts"})
@@ -23,18 +29,16 @@ function toItems(chats: OpenChatRow[], unread: Record<string, number>): ListItem
 
 export default memo(function Sidebar({focused, openPeerId, setContactInfo, onOpenBrowser}: {focused: boolean, openPeerId?: string | undefined, setContactInfo: (value: {alias: string, peerId: string} | undefined)=>unknown, onOpenBrowser: ()=>unknown}) {
     const [itemFocused, setItemFocused] = useState<ListItem | undefined>()
-    const [chats, setChats] = useState(getOpenChats())
-    const [unread, setUnread] = useState<Record<string, number>>(getUnreadCounts())
+    const [threads, setThreads] = useState(getOpenThreads())
     // Auto-select once on first load only. Re-running this on every contacts
     // change used to yank the open thread away whenever a message arrived.
     const didInitialSelect = useRef(false)
-    // Two-step delete confirm: peer_id awaiting a `y`, cleared on anything else.
+    // Two-step delete confirm: thread key awaiting a `y`, cleared on anything else.
     const [confirmDelete, setConfirmDelete] = useState<ListItem | undefined>()
     const theme = getTheme();
 
     const refresh = () => {
-        setChats(getOpenChats())
-        setUnread(getUnreadCounts())
+        setThreads(getOpenThreads())
     }
 
     const onSelect = (item: ListItem) => {
@@ -42,27 +46,26 @@ export default memo(function Sidebar({focused, openPeerId, setContactInfo, onOpe
             onOpenBrowser()
             return
         }
-        const chat = chats.find((c) => c.peer_id === item.value)
-        setContactInfo({alias: chat?.alias ?? stripBadge(item.label), peerId: item.value})
+        const thread = threads.find((t) => t.key === item.value)
+        setContactInfo({alias: thread?.label ?? stripBadge(item.label), peerId: item.value})
     }
 
     useEffect(() => {
-        const refreshUnread = () => {
-            setUnread(getUnreadCounts())
-        }
         socketBus.on("new_contact", refresh)
         socketBus.on("chats_changed", refresh)
-        socketBus.on("incoming_message", refreshUnread)
+        socketBus.on("incoming_message", refresh)
+        socketBus.on("groups_changed", refresh)
         socketBus.on("identified", refresh)
         return () => {
             socketBus.off("new_contact", refresh)
             socketBus.off("chats_changed", refresh)
-            socketBus.off("incoming_message", refreshUnread)
+            socketBus.off("incoming_message", refresh)
+            socketBus.off("groups_changed", refresh)
             socketBus.off("identified", refresh)
         }
     }, [])
 
-    const items = useMemo(() => toItems(chats, unread), [chats, unread])
+    const items = useMemo(() => toItems(threads), [threads])
 
     useEffect(() => {
         if (didInitialSelect.current) return
@@ -72,20 +75,26 @@ export default memo(function Sidebar({focused, openPeerId, setContactInfo, onOpe
             onSelect(first)
             setItemFocused(first)
         }
-    }, [chats])
+    }, [threads])
 
     useInput((input, key) => {
         if(!focused) return
         if (confirmDelete) {
             if (input === "y") {
                 const removed = confirmDelete.value
-                if (deleteContact(removed)) {
-                    if (openPeerId === removed) {
-                        setContactInfo(undefined)
-                    }
-                    setItemFocused(undefined)
-                    socketBus.emit("chats_changed")
+                const groupId = groupIdFromThreadKey(removed)
+                if (groupId) {
+                    client.leaveGroup(groupId)
+                    dropGroupCache(groupId)
+                } else {
+                    deleteContact(removed)
                 }
+                closeChat(removed)
+                if (openPeerId === removed) {
+                    setContactInfo(undefined)
+                }
+                setItemFocused(undefined)
+                socketBus.emit("chats_changed")
             }
             setConfirmDelete(undefined)
             return
@@ -96,8 +105,8 @@ export default memo(function Sidebar({focused, openPeerId, setContactInfo, onOpe
                 onSelect(itemFocused)
             }
             if (itemFocused.value !== "::contacts") {
-                const chat = chats.find((c) => c.peer_id === itemFocused.value)
-                setContactInfo({alias: chat?.alias ?? stripBadge(itemFocused.label), peerId: itemFocused.value})
+                const thread = threads.find((t) => t.key === itemFocused.value)
+                setContactInfo({alias: thread?.label ?? stripBadge(itemFocused.label), peerId: itemFocused.value})
             }
             return
         }
@@ -120,11 +129,12 @@ export default memo(function Sidebar({focused, openPeerId, setContactInfo, onOpe
     })
 
     if (confirmDelete) {
+        const isGroup = groupIdFromThreadKey(confirmDelete.value) !== null;
         return (
             <Box width={"20%"} borderColor={theme.roles.danger} borderStyle={"round"} flexDirection="column" paddingX={1}>
-                <Text>Delete</Text>
+                <Text>{isGroup ? "Leave" : "Delete"}</Text>
                 <Text bold>{confirmDelete.label}?</Text>
-                <Text dimColor>History is kept. (y/n)</Text>
+                <Text dimColor>{isGroup ? "History stays on your device. (y/n)" : "History is kept. (y/n)"}</Text>
             </Box>
         )
     }

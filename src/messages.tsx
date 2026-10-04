@@ -1,10 +1,21 @@
 import { Box, Spacer, Text, useInput, useStdout } from "ink";
 import { JSX, memo, useEffect, useMemo, useRef, useState } from "react";
+import { randomUUID } from "node:crypto";
 import { wrapText } from "./wrap.js";
-import { MessageRow, ServerAckFrame, MessageStatus } from "./types.js";
+import { MessageRow, ReadReceiptFrame, ServerAckFrame, MessageStatus } from "./types.js";
 import cliBoxes from "cli-boxes";
-import { getAllMessagesByPeerId, insertPendingMessage, markThreadRead } from "./store.js";
-import { sendChatText, sendReadReceipt } from "./client.js";
+import {
+  displayNameFor,
+  getAllMessagesByPeerId,
+  getGroupMessages,
+  groupIdFromThreadKey,
+  insertPendingMessage,
+  markGroupThreadRead,
+  markThreadRead,
+  readersForMessage,
+  recordRead,
+} from "./store.js";
+import { sendChatText, sendGroupText, sendReadReceipt } from "./client.js";
 import { formatMessageTime } from "./format.js";
 import { parseMarkup, sliceSegments, stripMarkup, type Segment, type SegmentStyle } from "./markup.js";
 import { getTheme, type Theme } from "./themes.js";
@@ -19,6 +30,8 @@ export type Line = {
     longest: number;
     status: MessageStatus
     createdAt: number
+    sender: string | null;
+    readers: string[];
     lineIndex: number
 };
 
@@ -44,7 +57,7 @@ type StatusLine = {
     text: JSX.Element;
     direction: 'in' | 'out';
     messageId: string;
-    lineIndex: "s"
+    lineIndex: "s" | "h"
     type: "status";
 }
 
@@ -58,19 +71,23 @@ export default memo(function MessagesBox({ focused, contactInfo, availableHeight
 
     const [messages, setMessages] = useState<MessageRow[]>([])
 
+    // Thread key: `g:<id>` for groups, peer id for DMs.
+    const threadKey = contactInfo?.peerId
+    const threadGroupId = threadKey ? groupIdFromThreadKey(threadKey) : null
+
     useEffect(() => {
-        if (!contactInfo) return
-        setMessages(getAllMessagesByPeerId(contactInfo.peerId))
-    }, [contactInfo?.peerId]);
+        if (!threadKey) return
+        setMessages(threadGroupId ? getGroupMessages(threadGroupId) : getAllMessagesByPeerId(threadKey))
+    }, [threadKey]);
 
 
     const theme = getTheme();
 
     const lines = useMemo(() => {
         return messages.flatMap((msg) =>
-            messagesToLines(msg, Math.floor(stdout.columns * 0.8 * 0.4))
+            messagesToLines(msg, Math.floor(stdout.columns * 0.8 * 0.4), threadGroupId)
         );
-    }, [messages, stdout.columns]);
+    }, [messages, stdout.columns, threadGroupId]);
 
     const bubbleLines = useMemo(() => {
         return linesToBubbles(lines, theme);
@@ -94,17 +111,38 @@ export default memo(function MessagesBox({ focused, contactInfo, availableHeight
     }, [bubbleLines.length]);
 
     useEffect(() => {
-        if (!contactInfo) return
+        if (!threadKey) return
         const sendHandler = async (msg: string) => {
             const text = msg.trim()
             if (!text) return
-            const { rowId, clientMessageId } = insertPendingMessage(contactInfo.peerId, text)
+            if (threadGroupId) {
+                const clientMessageId = randomUUID();
+                const { rowId } = insertPendingMessage(threadKey, text, clientMessageId, threadGroupId);
+                const optimistic: MessageRow = {
+                    id: rowId,
+                    client_message_id: clientMessageId,
+                    direction: "out",
+                    peer_id: threadKey,
+                    group_id: threadGroupId,
+                    text,
+                    status: "pending",
+                    created_at: Date.now()
+                }
+                setMessages(prev => [...prev, optimistic])
+                try {
+                    await sendGroupText(threadGroupId, clientMessageId, text)
+                } catch {
+                    // Row stays pending; the outbox flushes it on reconnect.
+                }
+                return
+            }
+            const { rowId, clientMessageId } = insertPendingMessage(threadKey, text)
 
             const optimistic: MessageRow = {
                 id: rowId,
                 client_message_id: clientMessageId,
                 direction: "out",
-                peer_id: contactInfo.peerId,
+                peer_id: threadKey,
                 text,
                 status: "pending",
                 created_at: Date.now()
@@ -113,7 +151,7 @@ export default memo(function MessagesBox({ focused, contactInfo, availableHeight
             setMessages(prev => [...prev, optimistic])
 
             try {
-                await sendChatText(contactInfo.peerId, clientMessageId, text)
+                await sendChatText(threadKey, clientMessageId, text)
             } catch {
                 // Row stays pending; the outbox flushes it on reconnect.
             }
@@ -134,7 +172,10 @@ export default memo(function MessagesBox({ focused, contactInfo, availableHeight
             })
         }
 
-        const readReceiptHandler = (message: { messageId: string }) => {
+        const readReceiptHandler = (message: ReadReceiptFrame) => {
+            if (message.messageId) {
+                recordRead(message.messageId, message.reader)
+            }
             setMessages(prev => {
                 return prev.map(msg => {
                     if (msg.message_id === message.messageId && msg.direction === "out") {
@@ -146,8 +187,8 @@ export default memo(function MessagesBox({ focused, contactInfo, availableHeight
         }
 
         const markOpenThreadRead = () => {
-            if (!contactInfo) return
-            const ids = markThreadRead(contactInfo.peerId)
+            if (!threadKey) return
+            const ids = threadGroupId ? markGroupThreadRead(threadGroupId) : markThreadRead(threadKey)
             if (ids.length === 0) return
             for (const id of ids) {
                 sendReadReceipt(id)
@@ -163,7 +204,10 @@ export default memo(function MessagesBox({ focused, contactInfo, availableHeight
         }
 
         const inMessageHandler = (message: MessageRow) => {
-            if (message.peer_id === contactInfo.peerId) {
+            const belongs = threadGroupId
+                ? message.group_id === threadGroupId
+                : message.peer_id === threadKey && !message.group_id;
+            if (belongs) {
                 setMessages(prev => [...prev, message])
                 // The open thread is being viewed: report reads immediately.
                 markOpenThreadRead()
@@ -182,7 +226,7 @@ export default memo(function MessagesBox({ focused, contactInfo, availableHeight
             socketBus.off("incoming_message", inMessageHandler)
             socketBus.off("read_receipt", readReceiptHandler)
         }
-    }, [contactInfo?.peerId])
+    }, [threadKey])
 
     useInput((input, key) => {
         if (!focused) return
@@ -208,7 +252,7 @@ export default memo(function MessagesBox({ focused, contactInfo, availableHeight
     return (
         <Box width={"80%"} borderColor={focused ? theme.roles.borderFocused : theme.roles.borderDim} borderStyle={"round"} flexDirection="column" justifyContent="flex-start">
             <Box width={"100%"}  paddingX={1} borderBottomColor={focused ? theme.roles.borderFocused : theme.roles.borderDim} borderBottom={true} borderStyle={"single"} borderTop={false} borderLeft={false} borderRight={false}>
-                <Text>{contactInfo.alias}: {contactInfo.peerId}</Text>
+                <Text>{contactInfo.alias}{threadGroupId ? "" : `: ${contactInfo.peerId}`}</Text>
                 <Spacer></Spacer>
                 <Text>{offset} / {maxOffset}</Text>
             </Box>
@@ -250,6 +294,15 @@ function segmentProps(style: SegmentStyle, theme: Theme): object {
 function linesToBubbles(lines: Line[], theme: Theme) {
     const Boxes = lines.flatMap((line) => {
         const result: (BubbleLine | LineBreak | StatusLine)[] = []
+        if (line.isFirstLine && line.sender) {
+            result.push({
+                text: (<Text dimColor>{line.sender}</Text>),
+                direction: line.direction,
+                messageId: line.messageId,
+                lineIndex: "h",
+                type: "status",
+            })
+        }
         const edge = line.status !== "pending" ? theme.roles.accent : theme.roles.pending
         const text = (
             <Text>
@@ -301,10 +354,16 @@ function linesToBubbles(lines: Line[], theme: Theme) {
                 lineIndex: "x",
                 type: "bottom"
             })
-            // Timestamp (+ delivery tick for outbound) lives on its own dim line
-            // under the bubble so content width (and borders) never shift.
+            // Timestamp (+ delivery tick for outbound, seen-by for groups) lives on
+            // its own dim line under the bubble so content width never shifts.
             const glyph = line.direction === "out" ? statusGlyph(line.status) : ""
-            const meta = glyph ? `${formatMessageTime(line.createdAt)} ${glyph}` : formatMessageTime(line.createdAt)
+            const seen =
+                line.direction === "out" && line.readers.length > 0
+                    ? ` · ${line.readers.slice(0, 2).join(", ")}${
+                          line.readers.length > 2 ? ` +${line.readers.length - 2}` : ""
+                      }`
+                    : ""
+            const meta = `${formatMessageTime(line.createdAt)}${glyph ? ` ${glyph}` : ""}${seen}`
             result.push({
                 text: (<Text dimColor>{meta}</Text>),
                 direction: line.direction,
@@ -319,7 +378,7 @@ function linesToBubbles(lines: Line[], theme: Theme) {
 
 }
 
-function messagesToLines(message: MessageRow, maxWidth: number) {
+function messagesToLines(message: MessageRow, maxWidth: number, threadGroupId: string | null) {
     const segments = parseMarkup(message.text);
     const visible = stripMarkup(message.text);
     const { raw, longest } = wrapText(visible, maxWidth);
@@ -337,6 +396,14 @@ function messagesToLines(message: MessageRow, maxWidth: number) {
             isLastLine: arr.length - 1 === index,
             status: message.status,
             createdAt: message.created_at,
+            sender:
+                message.direction === "in" && threadGroupId
+                    ? displayNameFor(threadGroupId, message.peer_id, message.sender_nick ?? null)
+                    : null,
+            readers:
+                message.direction === "out" && threadGroupId && message.message_id
+                    ? readersForMessage(message.message_id)
+                    : [],
             longest: longest,
             lineIndex: index
         } as Line;

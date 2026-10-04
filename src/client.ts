@@ -293,6 +293,7 @@ class YaprClient {
       if (timer.unref) timer.unref();
     });
     const seen = new Set<string>();
+    const knownBefore = new Set(store.listGroupCache().map((g) => g.groupId));
     for (const g of frame.groups) {
       seen.add(g.groupId);
       store.upsertGroupCache(
@@ -300,6 +301,10 @@ class YaprClient {
         g.name,
         g.members.map((m) => ({ user_id: m.userId, role: m.role, joined_at: m.joinedAt }))
       );
+      // Newly discovered groups (invites) open a sidebar thread automatically.
+      if (!knownBefore.has(g.groupId)) {
+        store.openChat(store.groupThreadKey(g.groupId));
+      }
     }
     for (const cached of store.listGroupCache()) {
       if (!seen.has(cached.groupId)) {
@@ -550,4 +555,13 @@ export function sendChatText(
 /** Module-level read receipt used by thread views. */
 export function sendReadReceipt(messageId: string): void {
   client.sendReadReceipt(messageId);
+}
+
+/** Module-level group send used by group thread views. */
+export function sendGroupText(
+  groupId: string,
+  clientMessageId: string,
+  text: string
+): Promise<void> {
+  return client.sendGroupText(groupId, clientMessageId, text);
 }

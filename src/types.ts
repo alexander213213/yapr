@@ -1,4 +1,4 @@
-export type Focus = "sidebar" | "textbox" | "main";
+export type Focus = "sidebar" | "textbox" | "main" | "details";
 
 export type ContactsRow = {
   peer_id: string;
