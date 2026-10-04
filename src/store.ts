@@ -58,8 +58,8 @@ const closeChatStmt = db.prepare(`
 `);
 
 const findOpenChatsStmt = db.prepare(`
-    SELECT c.peer_id, c.alias, o.opened_at
-    FROM open_chats o JOIN contacts c ON c.peer_id = o.peer_id
+    SELECT o.peer_id, c.alias, o.opened_at
+    FROM open_chats o LEFT JOIN contacts c ON c.peer_id = o.peer_id
     ORDER BY o.opened_at ASC, o.peer_id ASC
 `);
 
@@ -84,6 +84,22 @@ const markInboundReadStmt = db.prepare(`
     UPDATE messages SET status = 'read'
     WHERE peer_id = ? AND direction = 'in' AND status = 'received'
     RETURNING message_id
+`);
+
+const markGroupInboundReadStmt = db.prepare(`
+    UPDATE messages SET status = 'read'
+    WHERE group_id = ? AND direction = 'in' AND status = 'received'
+    RETURNING message_id
+`);
+
+const recordReadStmt = db.prepare(`
+    INSERT OR IGNORE INTO message_reads (message_id, reader_id, read_at)
+    VALUES (?, ?, ?)
+`);
+
+const readersForStmt = db.prepare(`
+    SELECT reader_id FROM message_reads WHERE message_id = ?
+    ORDER BY read_at ASC, reader_id ASC
 `);
 
 const unreadCountsStmt = db.prepare(`
@@ -378,6 +394,27 @@ export function markThreadRead(peerId: string): string[] {
   return rows.map((r) => r.message_id);
 }
 
+/** Mark a whole inbound group thread read. */
+export function markGroupThreadRead(groupId: string): string[] {
+  const rows = markGroupInboundReadStmt.all(groupId) as { message_id: string }[];
+  return rows.map((r) => r.message_id);
+}
+
+/** Record a read receipt; returns all known readers of the message. */
+export function recordRead(messageId: string, readerId: string): string[] {
+  try {
+    recordReadStmt.run(messageId, readerId, Date.now());
+  } catch (err: unknown) {
+    if (!isUniqueViolation(err)) throw err;
+  }
+  return readersForMessage(messageId);
+}
+
+export function readersForMessage(messageId: string): string[] {
+  const rows = readersForStmt.all(messageId) as { reader_id: string }[];
+  return rows.map((r) => r.reader_id);
+}
+
 /** Unread inbound counts per peer for sidebar badges. */
 export function getUnreadCounts(): Record<string, number> {
   const rows = unreadCountsStmt.all() as { peer_id: string; n: number }[];
@@ -441,6 +478,45 @@ export function closeChat(peerId: string): boolean {
 
 export function getOpenChats(): OpenChatRow[] {
   return findOpenChatsStmt.all() as OpenChatRow[];
+}
+
+export type OpenThread =
+  | { kind: "dm"; key: string; peerId: string; label: string; unread: number }
+  | { kind: "group"; key: string; groupId: string; label: string; unread: number };
+
+/** Unified sidebar listing: DM chats plus open group threads. */
+export function getOpenThreads(): OpenThread[] {
+  const unreadRows = db
+    .prepare(
+      `SELECT COALESCE(group_id, peer_id) AS t, COUNT(*) AS n FROM messages
+       WHERE direction = 'in' AND status = 'received' GROUP BY t`
+    )
+    .all() as { t: string; n: number }[];
+  const unread = new Map(unreadRows.map((r) => [r.t, r.n]));
+  const out: OpenThread[] = [];
+  for (const chat of getOpenChats()) {
+    if (isGroupThreadKey(chat.peer_id)) {
+      const groupId = groupIdFromThreadKey(chat.peer_id);
+      if (!groupId) continue;
+      const cached = getGroupCache(groupId);
+      out.push({
+        kind: "group",
+        key: chat.peer_id,
+        groupId,
+        label: cached?.name ?? `Group ${groupId.slice(4, 10)}`,
+        unread: unread.get(groupId) ?? 0,
+      });
+    } else {
+      out.push({
+        kind: "dm",
+        key: chat.peer_id,
+        peerId: chat.peer_id,
+        label: chat.alias ?? chat.peer_id,
+        unread: unread.get(chat.peer_id) ?? 0,
+      });
+    }
+  }
+  return out;
 }
 
 export function getPeerKey(userId: string): string | null {

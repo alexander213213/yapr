@@ -12,9 +12,13 @@ envelopes it cannot read and holds them while you are offline.
 - **SMS-like reliability** — persistent outbox with automatic resend (same IDs, so the
   server dedupes), offline inbox replay with paging, delivery acks and read receipts
   (`…` sending → `✓` sent → `✓✓` read).
-- **Terminal UI** — sidebar contacts with unread badges, chat bubbles, scrollback,
-  add/edit-contact modal, online (`●`) / offline (`○`) indicator, server errors as
-  transient toasts. Reconnects with backoff and keeps retrying.
+- **Terminal UI** — sidebar chats with unread badges, chat bubbles, scrollback,
+  contacts browser, group threads with sender names and seen-by ticks, details pane
+  (`i`), online (`●`) / offline (`○`) indicator, server errors as transient toasts.
+  Reconnects with backoff and keeps retrying.
+- **Group chats** — creator-admin groups up to 50, pairwise E2EE per member, offline
+  replay, per-member read tracking, nicknames (advertised or local-only), and
+  member-approved history sharing for newcomers.
 - **Durable local data** — SQLite in your OS data dir (survives npm updates) plus a
   device identity key. Automatic schema migrations.
 
@@ -47,12 +51,13 @@ npm run dev    # tsx + TUI
 
 Keys:
 
-- `Tab` cycles sidebar → thread → textbox. `q` quits (outside the textbox).
-- Sidebar (open chats): `↑/↓` move, `→`/`Enter` open, `c` or `≡ Contacts…` opens the
-  browser, `x` closes a chat (stays a contact), `d` deletes a contact (two-step confirm,
-  history is kept).
+- `Tab` cycles sidebar → thread → details → textbox. `q` quits (outside the textbox).
+- Sidebar (open chats, `◈` = group): `↑/↓` move, `→`/`Enter` open, `c` or `≡ Contacts…`
+  opens the browser, `x` closes a chat (stays a contact), `d` deletes a contact — or
+  leaves a group — with two-step confirm, `g` starts a new group, `i` toggles details.
 - Thread: `↑/↓` scroll. Opening a thread marks it read (sends receipts). Every message
-  shows its local time (`14:32 ✓✓`); older ones get a day prefix.
+  shows its local time (`14:32 ✓✓`); older ones get a day prefix. Group messages show
+  the sender and who has seen them.
 - Composer: `Enter` sends, `Ctrl+J` inserts a newline (multiline drafts grow to 8 rows),
   `Shift+Enter` also inserts a newline on terminals that report it.
 - `s` opens Settings (nickname + what you reveal where + theme). First run registers you
@@ -72,7 +77,6 @@ Pick a theme in Settings (`moss`, `amber`, `ocean`, `mono`). Every theme keeps t
 emphasis ramp ordered brightest-first, so `$C1` always outshines `$C3`.
 
 ## Contacts and keys
-
 The sidebar holds **open chats**; **Contacts** (`c`) holds everyone. There you can start
 a chat, rename, delete, or add by ID. Add contacts by their server user ID with any
 alias you like (IDs can't be renamed later — they anchor history; aliases can).
@@ -80,9 +84,24 @@ Unknown senders appear automatically so replies just work. Public keys are fetch
 from the server directory on demand and cached locally; if a message can't be
 decrypted you see `[encrypted message — update yapr to read it]` instead of garbage.
 
-Your **nickname** and reveal toggles (Settings, `s`) are stored locally in preparation
-for group chats: the nickname will travel inside your encrypted envelopes — never
-visible to the server — once groups land. Until then they change nothing.
+Your **nickname** and reveal toggles (Settings, `s`) travel inside your encrypted
+envelopes — never visible to the server. The group default applies everywhere unless
+you set a per-group override; DMs include it only if you enable that toggle.
+
+## Group chats
+
+Create with `g`: name it, pick members (rapid `Enter`-to-add, type to filter, `Tab`
+done with the selection). Each message is sealed separately per member — the server
+only routes opaque blobs. The creator admins: adding/removing members, renaming.
+Leaving passes admin to the longest-tenured member; the last one out dissolves it.
+
+- **Details (`i`)**: info, member list, nicknames, leave. Your own nickname row sets
+  what you advertise to that group; other rows set local pet names (never sent).
+- **History for newcomers**: new members see only what arrives after joining. They can
+  ask (`request` goes to online members); you approve per request and your client
+  re-sends your recent thread, re-encrypted for them.
+- **Removed members** keep whatever is already on their device — like any messenger,
+  leaving removes future messages, not the past.
 
 ## Troubleshooting
 

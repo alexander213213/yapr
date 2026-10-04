@@ -61,8 +61,7 @@ describe("v3 to v4 migration", () => {
     expect(store.getAllMessagesByPeerId("alice").map((m) => m.message_id)).toEqual(["dm1"]);
   });
 
-  it("caches groups, members and nicks with display fallbacks", () => {
-    store.upsertGroupCache("grp_1", "fam", [
+  it("caches groups, members and nicks with display fallbacks", () => {    store.upsertGroupCache("grp_1", "fam", [
       { user_id: "alice", role: "admin", joined_at: 1000 },
       { user_id: "bob", role: "member", joined_at: 2000 },
     ]);
@@ -92,5 +91,31 @@ describe("v3 to v4 migration", () => {
 
     store.dropGroupCache("grp_1");
     expect(store.getGroupCache("grp_1")).toBeUndefined();
+  });
+
+  it("lists unified threads with per-thread unread", () => {
+    store.addNewContact("dm-a", "Dee");
+    store.openChat("dm-a");
+    store.upsertGroupCache("grp_t", "Team", [
+      { user_id: "dm-a", role: "admin", joined_at: 1000 },
+      { user_id: "ee", role: "member", joined_at: 2000 },
+    ]);
+    store.openChat(store.groupThreadKey("grp_t"));
+    store.insertIncomingMessage("dm-a", "t-dm-1", "hi", 1000);
+    store.insertIncomingMessage("ee", "t-g-1", "yo", 1000, "grp_t");
+    const threads = store.getOpenThreads();
+    const dm = threads.find((t) => t.kind === "dm" && t.key === "dm-a");
+    const group = threads.find((t) => t.kind === "group" && t.key === "g:grp_t");
+    expect(dm).toMatchObject({ label: "Dee", unread: 1 });
+    expect(group).toMatchObject({ label: "Team", unread: 1 });
+    expect(store.getGroupMessages("grp_t").map((m) => m.message_id)).toEqual(["t-g-1"]);
+  });
+
+  it("records per-message readers", () => {
+    expect(store.recordRead("rm-1", "bob")).toEqual(["bob"]);
+    expect(store.recordRead("rm-1", "alice").sort()).toEqual(["alice", "bob"]);
+    expect(store.recordRead("rm-1", "bob")).toContain("bob");
+    expect(store.readersForMessage("rm-1")).toHaveLength(2);
+    expect(store.readersForMessage("nope")).toEqual([]);
   });
 });
