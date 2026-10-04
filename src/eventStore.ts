@@ -1,6 +1,11 @@
 import { EventEmitter } from "node:events";
 import type { MessageRow } from "./types.js";
-import type { ErrorFrame, ReadReceiptFrame, ServerAckFrame } from "./protocol.js";
+import type {
+  ErrorFrame,
+  HistoryRequestFrame,
+  ReadReceiptFrame,
+  ServerAckFrame,
+} from "./protocol.js";
 
 /** Typed UI/transport bus. Replaces the stringly-typed global emitter. */
 export type BusEvents = {
@@ -20,6 +25,10 @@ export type BusEvents = {
   connection: [online: boolean];
   /** Sender-side read notification (mark read). */
   read_receipt: [msg: ReadReceiptFrame];
+  /** Group membership snapshot changed (refresh group UI). */
+  groups_changed: [];
+  /** A member asks you to share group history (G3 UI approves). */
+  history_request: [msg: HistoryRequestFrame];
   /** Coded server error (log/toast; connection stays up). */
   server_error: [msg: ErrorFrame];
 };

@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
 import { dbPathFor, ensureDataDir } from "./storage.js";
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 // Tests must isolate storage explicitly: static imports evaluate before any
 // test-body env assignment, so an unset dir under Vitest would silently open
@@ -49,6 +49,8 @@ db.exec(`
     direction TEXT NOT NULL CHECK (direction IN ('in', 'out')),
     client_message_id TEXT,
     message_id TEXT,
+    group_id TEXT,
+    sender_nick TEXT,
     text TEXT NOT NULL,
     created_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000),
     status TEXT NOT NULL CHECK (status IN ('pending', 'sent', 'delivered', 'read', 'received')),
@@ -66,6 +68,37 @@ db.exec(`
     user_id TEXT PRIMARY KEY,
     pubkey TEXT NOT NULL,
     updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
+  );
+
+  CREATE TABLE IF NOT EXISTS open_chats (
+    peer_id TEXT PRIMARY KEY,
+    opened_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
+  );
+
+  CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS groups (
+    group_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
+  );
+
+  CREATE TABLE IF NOT EXISTS group_members (
+    group_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    joined_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000),
+    PRIMARY KEY (group_id, user_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS member_nicks (
+    group_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    nick TEXT NOT NULL,
+    PRIMARY KEY (group_id, user_id)
   );
 
   CREATE TABLE IF NOT EXISTS open_chats (
@@ -158,6 +191,23 @@ if (version === 2) {
     INSERT OR IGNORE INTO open_chats (peer_id, opened_at)
     SELECT DISTINCT peer_id, MIN(created_at) FROM messages GROUP BY peer_id
   `);
+  db.prepare(`UPDATE schema_version SET version = ?`).run(3);
+  version = 3;
+}
+
+if (version === 3) {
+  // v3 -> v4: group thread filing. Pure additions: the new cache tables come
+  // from the baseline block above; only the messages columns need migrating.
+  const cols = db.prepare(`PRAGMA table_info(messages)`).all() as { name: string }[];
+  if (!cols.some((c) => c.name === "group_id")) {
+    db.exec(`ALTER TABLE messages ADD COLUMN group_id TEXT`);
+  }
+  if (!cols.some((c) => c.name === "sender_nick")) {
+    db.exec(`ALTER TABLE messages ADD COLUMN sender_nick TEXT`);
+  }
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_messages_group ON messages (group_id, created_at);
+  `);
   db.prepare(`UPDATE schema_version SET version = ?`).run(SCHEMA_VERSION);
   version = SCHEMA_VERSION;
 }
@@ -167,6 +217,12 @@ if (version !== SCHEMA_VERSION) {
     `Unsupported schema version ${version} (expected ${SCHEMA_VERSION}). Refusing to open ${dbPath}.`
   );
 }
+
+// Indexes last: baseline tables may predate columns the indexes reference
+// (migrations above bring them current first).
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_messages_group ON messages (group_id, created_at);
+`);
 
 console.log(`using data dir ${dataDir}`);
 

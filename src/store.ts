@@ -3,8 +3,8 @@ import db from "./db.js";
 import type { ContactsRow, MessageRow, UserRow } from "./types.js";
 
 const insertIncomingMessageStmt = db.prepare(`
-    INSERT INTO messages (peer_id, direction, message_id, text, status, created_at)
-    VALUES (?, 'in', ?, ?, 'received', ?)
+    INSERT INTO messages (peer_id, direction, message_id, group_id, sender_nick, text, status, created_at)
+    VALUES (?, 'in', ?, ?, ?, ?, 'received', ?)
 `);
 
 const insertUserStmt = db.prepare(`
@@ -66,8 +66,8 @@ const findOpenChatsStmt = db.prepare(`
 export type OpenChatRow = ContactsRow & { opened_at: number };
 
 const insertPendingMessageStmt = db.prepare(`
-    INSERT INTO messages (peer_id, direction, client_message_id, text, status, created_at)
-    VALUES (?, 'out', ?, ?, 'pending', ?)
+    INSERT INTO messages (peer_id, direction, client_message_id, group_id, text, status, created_at)
+    VALUES (?, 'out', ?, ?, ?, 'pending', ?)
 `);
 
 const updateMessageStatusToSentStmt = db.prepare(`
@@ -94,10 +94,170 @@ const unreadCountsStmt = db.prepare(`
 
 const findMessagesByPeerIdStmt = db.prepare(`
     SELECT * FROM messages
-    WHERE peer_id = ?
+    WHERE peer_id = ? AND group_id IS NULL
     ORDER BY created_at ASC, id ASC
     LIMIT 200
 `);
+
+const findGroupMessagesStmt = db.prepare(`
+    SELECT * FROM messages
+    WHERE group_id = ?
+    ORDER BY created_at ASC, id ASC
+    LIMIT 200
+`);
+
+const upsertGroupStmt = db.prepare(`
+    INSERT INTO groups (group_id, name, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT (group_id) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at
+`);
+
+const deleteGroupStmt = db.prepare(`
+    DELETE FROM groups WHERE group_id = ?
+`);
+
+const replaceGroupMembersStmt = db.prepare(`
+    INSERT INTO group_members (group_id, user_id, role, joined_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT (group_id, user_id) DO UPDATE SET role = excluded.role, joined_at = excluded.joined_at
+`);
+
+const deleteGroupMembersStmt = db.prepare(`
+    DELETE FROM group_members WHERE group_id = ?
+`);
+
+const findGroupStmt = db.prepare(`
+    SELECT group_id, name, updated_at FROM groups WHERE group_id = ?
+`);
+
+const listGroupsStmt = db.prepare(`
+    SELECT group_id, name, updated_at FROM groups ORDER BY updated_at ASC
+`);
+
+const listGroupMembersStmt = db.prepare(`
+    SELECT user_id, role, joined_at FROM group_members
+    WHERE group_id = ? ORDER BY joined_at ASC, user_id ASC
+`);
+
+const getMemberNickStmt = db.prepare(`
+    SELECT nick FROM member_nicks WHERE group_id = ? AND user_id = ?
+`);
+
+const setMemberNickStmt = db.prepare(`
+    INSERT INTO member_nicks (group_id, user_id, nick)
+    VALUES (?, ?, ?)
+    ON CONFLICT (group_id, user_id) DO UPDATE SET nick = excluded.nick
+`);
+
+const clearMemberNickStmt = db.prepare(`
+    DELETE FROM member_nicks WHERE group_id = ? AND user_id = ?
+`);
+
+const deleteGroupNicksStmt = db.prepare(`
+    DELETE FROM member_nicks WHERE group_id = ?
+`);
+
+export type GroupRow = { group_id: string; name: string; updated_at: number };
+export type GroupMemberRow = { user_id: string; role: string; joined_at: number };
+export type GroupThread = { groupId: string; name: string; members: GroupMemberRow[] };
+
+/** Sidebar thread key for a group (DM threads use the peer id directly). */
+export function groupThreadKey(groupId: string): string {
+  return `g:${groupId}`;
+}
+
+export function isGroupThreadKey(key: string): boolean {
+  return key.startsWith("g:");
+}
+
+export function groupIdFromThreadKey(key: string): string | null {
+  return isGroupThreadKey(key) ? key.slice(2) : null;
+}
+
+/** Replace the cached snapshot for one group (members diffed wholesale). */
+export function upsertGroupCache(groupId: string, name: string, members: GroupMemberRow[]): void {
+  const now = Date.now();
+  upsertGroupStmt.run(groupId, name, now);
+  deleteGroupMembersStmt.run(groupId);
+  for (const m of members) {
+    replaceGroupMembersStmt.run(groupId, m.user_id, m.role, m.joined_at || now);
+  }
+}
+
+export function dropGroupCache(groupId: string): void {
+  deleteGroupMembersStmt.run(groupId);
+  deleteGroupStmt.run(groupId);
+  deleteGroupNicksStmt.run(groupId);
+}
+
+export function getGroupCache(groupId: string): GroupThread | undefined {
+  const group = findGroupStmt.get(groupId) as GroupRow | undefined;
+  if (!group) return undefined;
+  const members = listGroupMembersStmt.all(groupId) as GroupMemberRow[];
+  return { groupId: group.group_id, name: group.name, members };
+}
+
+export function listGroupCache(): GroupThread[] {
+  const groups = listGroupsStmt.all() as GroupRow[];
+  return groups.map((g) => ({
+    groupId: g.group_id,
+    name: g.name,
+    members: listGroupMembersStmt.all(g.group_id) as GroupMemberRow[],
+  }));
+}
+
+export function getGroupMembers(groupId: string): GroupMemberRow[] {
+  return listGroupMembersStmt.all(groupId) as GroupMemberRow[];
+}
+
+export function isGroupAdmin(groupId: string, userId: string): boolean {
+  const members = listGroupMembersStmt.all(groupId) as GroupMemberRow[];
+  return members.some((m) => m.user_id === userId && m.role === "admin");
+}
+
+/** Per-member display override. Blank clears back to fallbacks. */
+export function setMemberNick(groupId: string, userId: string, nick: string): void {
+  const clean = nick.trim();
+  if (!clean) {
+    clearMemberNickStmt.run(groupId, userId);
+    return;
+  }
+  setMemberNickStmt.run(groupId, userId, clean);
+}
+
+export function getMemberNick(groupId: string, userId: string): string | null {
+  const row = getMemberNickStmt.get(groupId, userId) as { nick: string } | undefined;
+  return row?.nick ?? null;
+}
+
+/**
+ * Nickname to advertise in envelopes for a context: per-group override wins,
+ * then the default nickname when its reveal toggle for that context is on.
+ */
+export function nickForContext(groupId: string | null, ownId: string): string {
+  if (groupId) {
+    const override = getMemberNick(groupId, ownId);
+    if (override) return override;
+    if (getSetting("share_nickname_gcs") === "1") return getSetting("nickname").trim();
+    return "";
+  }
+  if (getSetting("share_nickname_dms") === "1") return getSetting("nickname").trim();
+  return "";
+}
+
+/** Resolve what to display for a sender: pet override, advertised nick, alias, id. */
+export function displayNameFor(
+  groupId: string | null,
+  senderId: string,
+  advertisedNick: string | null
+): string {
+  if (groupId) {
+    const pet = getMemberNick(groupId, senderId);
+    if (pet) return pet;
+  }
+  if (advertisedNick) return advertisedNick;
+  return findContact(senderId)?.alias ?? senderId;
+}
 
 const findPendingOutboxStmt = db.prepare(`
     SELECT * FROM messages
@@ -189,10 +349,15 @@ export function findContact(peerId: string): ContactsRow | undefined {
 export function insertPendingMessage(
   peerId: string,
   text: string,
-  clientMessageId: string = randomUUID()
+  clientMessageId: string = randomUUID(),
+  groupId?: string
 ): { rowId: number; clientMessageId: string } {
-  const info = insertPendingMessageStmt.run(peerId, clientMessageId, text, Date.now());
+  const info = insertPendingMessageStmt.run(peerId, clientMessageId, groupId ?? null, text, Date.now());
   return { rowId: Number(info.lastInsertRowid), clientMessageId };
+}
+
+export function getGroupMessages(groupId: string): MessageRow[] {
+  return findGroupMessagesStmt.all(groupId) as MessageRow[];
 }
 
 export function getPendingOutbox(limit: number = OUTBOX_BATCH_LIMIT): MessageRow[] {
@@ -232,10 +397,19 @@ export function insertIncomingMessage(
   from: string,
   messageId: string,
   text: string,
-  timestamp: number
+  timestamp: number,
+  groupId?: string,
+  senderNick?: string
 ): InsertIncomingResult {
   try {
-    const info = insertIncomingMessageStmt.run(from, messageId, text, timestamp);
+    const info = insertIncomingMessageStmt.run(
+      from,
+      messageId,
+      groupId ?? null,
+      senderNick ?? null,
+      text,
+      timestamp
+    );
     return { inserted: true, rowId: Number(info.lastInsertRowid) };
   } catch (err: unknown) {
     if (isUniqueViolation(err)) {
