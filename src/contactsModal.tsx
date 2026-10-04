@@ -2,6 +2,7 @@ import { Box, Spacer, Text, useInput } from "ink";
 import TextInput from "ink-text-input";
 import { useEffect, useState } from "react";
 import { addNewContact, updateContact } from "./store.js";
+import { getTheme } from "./themes.js";
 
 type ContactsModalParams = {setShowModal: (value: boolean) => unknown} 
 & ({ mode: "add"} 
@@ -19,6 +20,7 @@ export default function ContactsModal(props: ContactsModalParams) {
     const idEditable = mode === "add"
     const [focus, setFocus] = useState<"alias" | "id" | "submit">("alias")
     const [error, setError] = useState<string | undefined>()
+    const theme = getTheme();
 
     useEffect(() => {
         if (mode === "edit") {
@@ -91,28 +93,28 @@ export default function ContactsModal(props: ContactsModalParams) {
 
     return (
         <>
-        <Box width={"50%"} height={16} paddingX={3} paddingY={1} justifyContent="flex-start" alignItems="flex-start" flexDirection="column" borderColor={"#1b2a09"} borderStyle={"round"}>
+        <Box width={"50%"} height={16} paddingX={3} paddingY={1} justifyContent="flex-start" alignItems="flex-start" flexDirection="column" borderColor={theme.roles.pending} borderStyle={"round"}>
             <Box width={"100%"} justifyContent="space-between">
                 <Text>{mode === "add" ? "Add New Contact" : "Edit Contact"}</Text>
                 {error ? <Text>{error}</Text> : <Spacer></Spacer>}
             </Box>
-            <Box marginY={1} width={"100%"} paddingX={1} borderStyle={"round"} borderColor={focus === "alias" ? "#496b22" : "#0e450b"}>
+            <Box marginY={1} width={"100%"} paddingX={1} borderStyle={"round"} borderColor={focus === "alias" ? theme.roles.borderFocused : theme.roles.borderDim}>
                 <Text>Name: </Text>
                 <TextInput value={alias} onChange={setAlias} placeholder="Enter Contact Name" focus={focus === "alias"}></TextInput>
             </Box>
             {idEditable ? (
-            <Box width={"100%"} paddingX={1} borderStyle={"round"} borderColor={focus === "id" ? "#496b22" : "#0e450b"}>
+            <Box width={"100%"} paddingX={1} borderStyle={"round"} borderColor={focus === "id" ? theme.roles.borderFocused : theme.roles.borderDim}>
                 <Text>ID: </Text>
                 <TextInput value={peerId} onChange={setPeerId} placeholder="Enter Contact ID" focus={focus === "id"}></TextInput>
             </Box>
             ) : (
-            <Box width={"100%"} paddingX={1} borderStyle={"round"} borderColor={"#0e450b"}>
+            <Box width={"100%"} paddingX={1} borderStyle={"round"} borderColor={theme.roles.borderDim}>
                 <Text>ID: </Text>
                 <Text dimColor>{peerId} (cannot be changed)</Text>
             </Box>
             )}
 
-            <Box width={"10%"} marginX={1} justifyContent="center" alignItems="center" alignSelf="flex-end" borderColor={focus === "submit" ? "#496b22" : "#0e450b"} borderStyle={"round"}>
+            <Box width={"10%"} marginX={1} justifyContent="center" alignItems="center" alignSelf="flex-end" borderColor={focus === "submit" ? theme.roles.borderFocused : theme.roles.borderDim} borderStyle={"round"}>
                 <Text>Submit</Text>
             </Box>
         </Box>

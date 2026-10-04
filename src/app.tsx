@@ -7,6 +7,7 @@ import ContactsModal from "./contactsModal.js";
 import ContactsBrowser from "./contactsBrowser.js";
 import SettingsForm from "./settingsForm.js";
 import ChatInput from "./inputBox.js";
+import { getTheme } from "./themes.js";
 import { socketBus } from "./eventStore.js";
 import { findUserStmt, openChat } from "./store.js";
 
@@ -32,6 +33,7 @@ export default memo(function App() {
     const [lastError, setLastError] = useState<string | undefined>()
     const [view, setView] = useState<"chat" | "contacts" | "settings">("chat")
     const [modalReturnView, setModalReturnView] = useState<"chat" | "contacts">("chat")
+    const theme = getTheme();
     const availableHeight = size.rows - 1 - 3
 
 
@@ -147,8 +149,8 @@ export default memo(function App() {
                     </Box>
                 ) : (
                     <Box width={size.cols} height={size.rows} alignItems="center" flexDirection="column">
-                        <Text bold color={"#9a9e3f"}>Yapr | {user ? user.user_id : ""} {online ? "●" : "○"}</Text>
-                        {lastError ? <Text color="red">{lastError}</Text> : null}
+                        <Text bold color={theme.roles.accent}>Yapr | {user ? user.user_id : ""} {online ? "●" : "○"}</Text>
+                        {lastError ? <Text color={theme.roles.error}>{lastError}</Text> : null}
                         <Box width={"100%"} flexGrow={1} alignItems="stretch" justifyContent="center" overflow="hidden">
                             <Sidebar focused={focused === "sidebar"} openPeerId={contactInfo?.peerId} setContactInfo={setContactInfo} onOpenBrowser={() => setView("contacts")}></Sidebar>
                             <MessagesBox focused={focused === "main"} contactInfo={contactInfo} availableHeight={availableHeight}/>

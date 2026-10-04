@@ -6,10 +6,12 @@ import cliBoxes from "cli-boxes";
 import { getAllMessagesByPeerId, insertPendingMessage, markThreadRead } from "./store.js";
 import { sendChatText, sendReadReceipt } from "./client.js";
 import { formatMessageTime } from "./format.js";
+import { parseMarkup, sliceSegments, stripMarkup, type Segment, type SegmentStyle } from "./markup.js";
+import { getTheme, type Theme } from "./themes.js";
 import { socketBus } from "./eventStore.js";
 
 export type Line = {
-    text: string;
+    segments: Segment[];
     messageId: string;
     direction: 'in' | 'out'
     isFirstLine: boolean;
@@ -62,6 +64,8 @@ export default memo(function MessagesBox({ focused, contactInfo, availableHeight
     }, [contactInfo?.peerId]);
 
 
+    const theme = getTheme();
+
     const lines = useMemo(() => {
         return messages.flatMap((msg) =>
             messagesToLines(msg, Math.floor(stdout.columns * 0.8 * 0.4))
@@ -69,8 +73,8 @@ export default memo(function MessagesBox({ focused, contactInfo, availableHeight
     }, [messages, stdout.columns]);
 
     const bubbleLines = useMemo(() => {
-        return linesToBubbles(lines);
-    }, [lines]);
+        return linesToBubbles(lines, theme);
+    }, [lines, theme]);
 
     const maxOffset = Math.max(0, bubbleLines.length - height)
 
@@ -193,8 +197,8 @@ export default memo(function MessagesBox({ focused, contactInfo, availableHeight
     const visible = bubbleLines.slice(offset, offset + height)
 
     if (!contactInfo) {
-        return (<Box width={"80%"} borderColor={focused ? "#496b22" : "#0e450b"} borderStyle={"round"} flexDirection="column" justifyContent="flex-start">
-            <Box width={"100%"}  paddingX={1} borderBottomColor={focused ? "#496b22" : "#0e450b"} borderBottom={true} borderStyle={"single"} borderTop={false} borderLeft={false} borderRight={false}>
+        return (<Box width={"80%"} borderColor={focused ? theme.roles.borderFocused : theme.roles.borderDim} borderStyle={"round"} flexDirection="column" justifyContent="flex-start">
+            <Box width={"100%"}  paddingX={1} borderBottomColor={focused ? theme.roles.borderFocused : theme.roles.borderDim} borderBottom={true} borderStyle={"single"} borderTop={false} borderLeft={false} borderRight={false}>
                 <Text>No Contacts Selected</Text>
             </Box>
         </Box>)
@@ -202,8 +206,8 @@ export default memo(function MessagesBox({ focused, contactInfo, availableHeight
 
 
     return (
-        <Box width={"80%"} borderColor={focused ? "#496b22" : "#0e450b"} borderStyle={"round"} flexDirection="column" justifyContent="flex-start">
-            <Box width={"100%"}  paddingX={1} borderBottomColor={focused ? "#496b22" : "#0e450b"} borderBottom={true} borderStyle={"single"} borderTop={false} borderLeft={false} borderRight={false}>
+        <Box width={"80%"} borderColor={focused ? theme.roles.borderFocused : theme.roles.borderDim} borderStyle={"round"} flexDirection="column" justifyContent="flex-start">
+            <Box width={"100%"}  paddingX={1} borderBottomColor={focused ? theme.roles.borderFocused : theme.roles.borderDim} borderBottom={true} borderStyle={"single"} borderTop={false} borderLeft={false} borderRight={false}>
                 <Text>{contactInfo.alias}: {contactInfo.peerId}</Text>
                 <Spacer></Spacer>
                 <Text>{offset} / {maxOffset}</Text>
@@ -232,14 +236,32 @@ function statusGlyph(status: Line["status"]): string {
     }
 }
 
-function linesToBubbles(lines: Line[]) {
+function segmentProps(style: SegmentStyle, theme: Theme): object {
+    switch (style) {
+        case "bold": return { bold: true };
+        case "code": return {};
+        case "e1": return { color: theme.roles.e1 };
+        case "e2": return { color: theme.roles.e2 };
+        case "e3": return { color: theme.roles.e3 };
+        default: return {};
+    }
+}
+
+function linesToBubbles(lines: Line[], theme: Theme) {
     const Boxes = lines.flatMap((line) => {
         const result: (BubbleLine | LineBreak | StatusLine)[] = []
+        const edge = line.status !== "pending" ? theme.roles.accent : theme.roles.pending
         const text = (
             <Text>
-                <Text color={line.status !== "pending" ? "#9a9e3f" : "#1b2a09"}>{cliBoxes.round.left}</Text>
-                {line.text}
-                <Text color={line.status !== "pending" ? "#9a9e3f" : "#1b2a09"}>{cliBoxes.round.right}</Text>
+                <Text color={edge}>{cliBoxes.round.left}</Text>
+                {line.segments.map((seg, i) =>
+                    seg.style === "code" ? (
+                        <Text key={i} dimColor>{seg.text}</Text>
+                    ) : (
+                        <Text key={i} {...segmentProps(seg.style, theme)}>{seg.text}</Text>
+                    )
+                )}
+                <Text color={edge}>{cliBoxes.round.right}</Text>
             </Text>
         )
         const box: BubbleLine = {
@@ -251,7 +273,7 @@ function linesToBubbles(lines: Line[]) {
 
         if (line.isFirstLine) {
             const breaker = (
-                <Text color={line.status !== "pending" ? "#9a9e3f" : "#1b2a09"}>
+                <Text color={line.status !== "pending" ? theme.roles.accent : theme.roles.pending}>
                     {cliBoxes.round.topLeft + cliBoxes.round.top.repeat(line.longest) + cliBoxes.round.topRight}
                 </Text>
             )
@@ -268,7 +290,7 @@ function linesToBubbles(lines: Line[]) {
 
         if (line.isLastLine) {
             const breaker = (
-                <Text color={line.status !== "pending" ? "#9a9e3f" : "#1b2a09"}>
+                <Text color={line.status !== "pending" ? theme.roles.accent : theme.roles.pending}>
                     {cliBoxes.round.bottomLeft + cliBoxes.round.bottom.repeat(line.longest) + cliBoxes.round.bottomRight}
                 </Text>
             )
@@ -298,11 +320,17 @@ function linesToBubbles(lines: Line[]) {
 }
 
 function messagesToLines(message: MessageRow, maxWidth: number) {
-    const { lines, longest } = wrapText(message.text, maxWidth)
+    const segments = parseMarkup(message.text);
+    const visible = stripMarkup(message.text);
+    const { raw, longest } = wrapText(visible, maxWidth);
 
-    return lines.map<Line>((value, index, arr) => {
+    return raw.map<Line>((value, index, arr) => {
+        let offset = 0;
+        for (let k = 0; k < index; k++) {
+            offset += (arr[k]?.length ?? 0);
+        }
         return {
-            text: value,
+            segments: sliceSegments(segments, offset, value.length),
             messageId: `${message.client_message_id ?? message.message_id ?? message.id}`,
             direction: message.direction,
             isFirstLine: index === 0,
@@ -311,6 +339,6 @@ function messagesToLines(message: MessageRow, maxWidth: number) {
             createdAt: message.created_at,
             longest: longest,
             lineIndex: index
-        } as Line
-    })
+        } as Line;
+    });
 }
