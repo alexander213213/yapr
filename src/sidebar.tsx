@@ -1,28 +1,28 @@
 import { Box, Text, useInput } from "ink";
 import SelectInput from "ink-select-input";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
-import { deleteContact, getAllContacts, getUnreadCounts } from "./store.js";
+import { closeChat, deleteContact, getOpenChats, getUnreadCounts } from "./store.js";
 import { socketBus } from "./eventStore.js";
-import type { ContactsRow } from "./types.js";
+import type { OpenChatRow } from "./store.js";
 
 type ListItem = {label: string, value: string}
 
-function toItems(contacts: ContactsRow[], unread: Record<string, number>): ListItem[] {
-    const items = contacts.map((value) => {
-        const name = value.alias ?? value.peer_id;
-        const count = unread[value.peer_id] ?? 0;
+function toItems(chats: OpenChatRow[], unread: Record<string, number>): ListItem[] {
+    const items = chats.map((chat) => {
+        const name = chat.alias ?? chat.peer_id;
+        const count = unread[chat.peer_id] ?? 0;
         return {
             label: count > 0 ? `${name} (${count})` : name,
-            value: value.peer_id
+            value: chat.peer_id
         }
     })
-    items.push({label: "+ Add New Contact", value: "+"})
+    items.unshift({label: "≡ Contacts…", value: "::contacts"})
     return items
 }
 
-export default memo(function Sidebar({focused, openPeerId, setContactInfo, setShowModal, setMode}: {focused: boolean, openPeerId?: string | undefined, setContactInfo: (value: {alias: string, peerId: string} | undefined)=>unknown, setShowModal: (value: boolean)=>unknown, setMode: (value: "add" | "edit")=>unknown}) {
+export default memo(function Sidebar({focused, openPeerId, setContactInfo, onOpenBrowser}: {focused: boolean, openPeerId?: string | undefined, setContactInfo: (value: {alias: string, peerId: string} | undefined)=>unknown, onOpenBrowser: ()=>unknown}) {
     const [itemFocused, setItemFocused] = useState<ListItem | undefined>()
-    const [contacts, setContacts] = useState(getAllContacts())
+    const [chats, setChats] = useState(getOpenChats())
     const [unread, setUnread] = useState<Record<string, number>>(getUnreadCounts())
     // Auto-select once on first load only. Re-running this on every contacts
     // change used to yank the open thread away whenever a message arrived.
@@ -31,42 +31,46 @@ export default memo(function Sidebar({focused, openPeerId, setContactInfo, setSh
     const [confirmDelete, setConfirmDelete] = useState<ListItem | undefined>()
 
     const refresh = () => {
-        setContacts(getAllContacts())
+        setChats(getOpenChats())
         setUnread(getUnreadCounts())
     }
 
     const onSelect = (item: ListItem) => {
-        if (item.value === "+") {
-            setMode("add")
-            setShowModal(true)
+        if (item.value === "::contacts") {
+            onOpenBrowser()
             return
         }
-        const contact = contacts.find((c) => c.peer_id === item.value)
-        setContactInfo({alias: contact?.alias ?? item.label, peerId: item.value})
+        const chat = chats.find((c) => c.peer_id === item.value)
+        setContactInfo({alias: chat?.alias ?? stripBadge(item.label), peerId: item.value})
     }
 
     useEffect(() => {
+        const refreshUnread = () => {
+            setUnread(getUnreadCounts())
+        }
         socketBus.on("new_contact", refresh)
-        socketBus.on("incoming_message", refresh)
+        socketBus.on("chats_changed", refresh)
+        socketBus.on("incoming_message", refreshUnread)
         socketBus.on("identified", refresh)
         return () => {
             socketBus.off("new_contact", refresh)
-            socketBus.off("incoming_message", refresh)
+            socketBus.off("chats_changed", refresh)
+            socketBus.off("incoming_message", refreshUnread)
             socketBus.off("identified", refresh)
         }
     }, [])
 
-    const items = useMemo(() => toItems(contacts, unread), [contacts, unread])
+    const items = useMemo(() => toItems(chats, unread), [chats, unread])
 
     useEffect(() => {
         if (didInitialSelect.current) return
-        const first = items.find((item) => item.value !== "+")
+        const first = items.find((item) => item.value !== "::contacts")
         if (first) {
             didInitialSelect.current = true
             onSelect(first)
             setItemFocused(first)
         }
-    }, [contacts])
+    }, [chats])
 
     useInput((input, key) => {
         if(!focused) return
@@ -78,7 +82,7 @@ export default memo(function Sidebar({focused, openPeerId, setContactInfo, setSh
                         setContactInfo(undefined)
                     }
                     setItemFocused(undefined)
-                    refresh()
+                    socketBus.emit("chats_changed")
                 }
             }
             setConfirmDelete(undefined)
@@ -89,25 +93,26 @@ export default memo(function Sidebar({focused, openPeerId, setContactInfo, setSh
             if (!key.tab) {
                 onSelect(itemFocused)
             }
-            if (itemFocused.value !== "+") {
-                const contact = contacts.find((c) => c.peer_id === itemFocused.value)
-                setContactInfo({alias: contact?.alias ?? itemFocused.label, peerId: itemFocused.value})
+            if (itemFocused.value !== "::contacts") {
+                const chat = chats.find((c) => c.peer_id === itemFocused.value)
+                setContactInfo({alias: chat?.alias ?? stripBadge(itemFocused.label), peerId: itemFocused.value})
             }
             return
         }
 
-        if (key.leftArrow && itemFocused?.value !== "+") {
-            if (!itemFocused) return
-            setMode("edit")
-            const contact = contacts.find((c) => c.peer_id === itemFocused.value)
-            setContactInfo({alias: contact?.alias ?? itemFocused.label, peerId: itemFocused.value})
-            setShowModal(true)
+        if ((input === "d" || key.delete) && itemFocused && itemFocused.value !== "::contacts") {
+            setConfirmDelete(itemFocused)
             return
         }
 
-        if ((input === "d" || key.delete) && itemFocused?.value !== "+") {
-            if (!itemFocused) return
-            setConfirmDelete(itemFocused)
+        if (input === "x" && itemFocused && itemFocused.value !== "::contacts") {
+            const closed = itemFocused.value
+            closeChat(closed)
+            if (openPeerId === closed) {
+                setContactInfo(undefined)
+            }
+            setItemFocused(undefined)
+            socketBus.emit("chats_changed")
             return
         }
     })
@@ -128,3 +133,8 @@ export default memo(function Sidebar({focused, openPeerId, setContactInfo, setSh
         </Box>
     )
 })
+
+/** Strip an unread badge (`Name (3)` -> `Name`) for alias fallback. */
+function stripBadge(label: string): string {
+    return label.replace(/ \(\d+\)$/, "")
+}
