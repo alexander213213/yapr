@@ -3,7 +3,7 @@ import { wrapText } from "./wrap.js";
 
 describe("wrapText", () => {
   it("returns no lines for non-positive widths", () => {
-    expect(wrapText("hello", 0)).toEqual({ lines: [], longest: 0 });
+    expect(wrapText("hello", 0)).toEqual({ lines: [], longest: 0, raw: [] });
   });
 
   it("wraps on word boundaries and pads to the longest line", () => {
@@ -19,5 +19,11 @@ describe("wrapText", () => {
 
   it("keeps short text on one line", () => {
     expect(wrapText("hi", 10).lines).toEqual(["hi"]);
+  });
+
+  it("keeps explicit newlines as paragraph breaks", () => {
+    const { lines, longest } = wrapText("aaa bb\n\ncc dd", 4);
+    expect(lines).toEqual(["aaa", "bb ", "   ", "cc ", "dd "]);
+    expect(longest).toBe(3);
   });
 });
