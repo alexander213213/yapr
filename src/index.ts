@@ -13,7 +13,10 @@ async function main() {
   const enterAltScreen = () => process.stdout.write("\x1b[?1049h");
   const leaveAltScreen = () => process.stdout.write("\x1b[?1049l");
   enterAltScreen();
-  const instance = render(React.createElement(App));
+  // Kitty keyboard protocol in auto mode: terminals that speak it report
+  // Shift+Enter distinctly (used as newline); everywhere else Ctrl+J does.
+  // Unsupported terminals are untouched after the query timeout.
+  const instance = render(React.createElement(App), { kittyKeyboard: { mode: "auto" } });
 
   client.start();
 

@@ -1,6 +1,7 @@
 import { Box, Text, useInput } from "ink";
 import { memo, useMemo, useState } from "react";
 import { deleteContact, getAllContacts, openChat } from "./store.js";
+import { getTheme } from "./themes.js";
 import { socketBus } from "./eventStore.js";
 import type { ContactsRow } from "./types.js";
 
@@ -33,6 +34,7 @@ export default memo(function ContactsBrowser({
   const [filter, setFilter] = useState("");
   const [picked, setPicked] = useState<string[]>([]);
   const [confirmDelete, setConfirmDelete] = useState<ContactsRow | undefined>();
+  const theme = getTheme();
 
   const refresh = () => setContacts(getAllContacts());
 
@@ -122,7 +124,7 @@ export default memo(function ContactsBrowser({
 
   if (confirmDelete) {
     return (
-      <Box width={"60%"} borderColor={"#7a1f1f"} borderStyle={"round"} flexDirection="column" paddingX={2} paddingY={1}>
+      <Box width={"60%"} borderColor={theme.roles.danger} borderStyle={"round"} flexDirection="column" paddingX={2} paddingY={1}>
         <Text bold>Delete {confirmDelete.alias ?? confirmDelete.peer_id}?</Text>
         <Text dimColor>History is kept. (y/n)</Text>
       </Box>
@@ -130,7 +132,7 @@ export default memo(function ContactsBrowser({
   }
 
   return (
-    <Box width={"80%"} borderColor={"#496b22"} borderStyle={"round"} flexDirection="column" paddingX={2} paddingY={1}>
+    <Box width={"80%"} borderColor={theme.roles.borderFocused} borderStyle={"round"} flexDirection="column" paddingX={2} paddingY={1}>
       <Text bold>
         {pickMode ? `Add members${picked.length > 0 ? ` (${picked.length} added)` : ""}` : "Contacts"}
       </Text>
@@ -147,7 +149,7 @@ export default memo(function ContactsBrowser({
           visible.slice(0, 20).map((c, i) => {
             const label = `${c.alias ?? c.peer_id}${c.alias ? ` (${c.peer_id})` : ""}${picked.includes(c.peer_id) ? " ✓" : ""}`;
             return i === highlight ? (
-              <Text key={c.peer_id} color={"#9a9e3f"}>{`> ${label}`}</Text>
+              <Text key={c.peer_id} color={theme.roles.accent}>{`> ${label}`}</Text>
             ) : (
               <Text key={c.peer_id} dimColor>{`  ${label}`}</Text>
             );

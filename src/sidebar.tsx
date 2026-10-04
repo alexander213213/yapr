@@ -2,6 +2,7 @@ import { Box, Text, useInput } from "ink";
 import SelectInput from "ink-select-input";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { closeChat, deleteContact, getOpenChats, getUnreadCounts } from "./store.js";
+import { getTheme } from "./themes.js";
 import { socketBus } from "./eventStore.js";
 import type { OpenChatRow } from "./store.js";
 
@@ -29,6 +30,7 @@ export default memo(function Sidebar({focused, openPeerId, setContactInfo, onOpe
     const didInitialSelect = useRef(false)
     // Two-step delete confirm: peer_id awaiting a `y`, cleared on anything else.
     const [confirmDelete, setConfirmDelete] = useState<ListItem | undefined>()
+    const theme = getTheme();
 
     const refresh = () => {
         setChats(getOpenChats())
@@ -119,7 +121,7 @@ export default memo(function Sidebar({focused, openPeerId, setContactInfo, onOpe
 
     if (confirmDelete) {
         return (
-            <Box width={"20%"} borderColor={"#7a1f1f"} borderStyle={"round"} flexDirection="column" paddingX={1}>
+            <Box width={"20%"} borderColor={theme.roles.danger} borderStyle={"round"} flexDirection="column" paddingX={1}>
                 <Text>Delete</Text>
                 <Text bold>{confirmDelete.label}?</Text>
                 <Text dimColor>History is kept. (y/n)</Text>
@@ -128,7 +130,7 @@ export default memo(function Sidebar({focused, openPeerId, setContactInfo, onOpe
     }
 
     return (
-        <Box width={"20%"} borderColor={focused ? "#496b22" : "#0e450b"} borderStyle={"round"}>
+        <Box width={"20%"} borderColor={focused ? theme.roles.borderFocused : theme.roles.borderDim} borderStyle={"round"}>
             <SelectInput isFocused={focused} items={items} onSelect={onSelect} onHighlight={(item) => setItemFocused(item)}></SelectInput>
         </Box>
     )
