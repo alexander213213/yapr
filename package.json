@@ -12,9 +12,11 @@
   "scripts": {
     "dev": "tsx --env-file=.env src/index.ts",
     "db:seed": "tsx --env-file=.env src/seed.ts",
+    "prebuild": "node -e \"fs.rmSync('dist', { recursive: true, force: true })\"",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prepublishOnly": "npm run build"
   },
   "files": [
     "dist"
