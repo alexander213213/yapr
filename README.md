@@ -64,7 +64,8 @@ npm run dev    # tsx + TUI
 
 Keys:
 
-- `Tab` cycles sidebar → thread → details → textbox. `q` quits (outside the textbox).
+- `Tab` cycles sidebar → thread → details → textbox. `t` jumps straight to the
+  textbox. `q` quits (outside the textbox).
 - Sidebar (open chats, `◈` = group): `↑/↓` move, `→`/`Enter` open, `c` or `≡ Contacts…`
   opens the browser, `x` closes a chat (stays a contact), `d` deletes a contact — or
   leaves a group — with two-step confirm, `g` starts a new group, `i` toggles details.
