@@ -11,7 +11,9 @@ const TEST_DIR = path.join(os.tmpdir(), `yapr-messages-test-${process.pid}-${Dat
 fs.rmSync(TEST_DIR, { recursive: true, force: true });
 process.env.YAPR_DATA_DIR = TEST_DIR;
 
-const { messagesToLines } = await import("./messages.js");
+const { messagesToLines, markThreadAsRead } = await import("./messages.js");
+const { socketBus } = await import("./eventStore.js");
+const { insertIncomingMessage, getUnreadCounts } = await import("./store.js");
 
 function row(text: string): MessageRow {
   return {
@@ -107,5 +109,43 @@ describe("messagesToLines", () => {
     const joined = lines[0]!.segments.map((s) => s.text).join("");
     expect(joined.startsWith(" ")).toBe(false);
     expect(visible(lines[0]!)).toBe("hi");
+  });
+});
+
+describe("markThreadAsRead", () => {
+  it("flips the backlog and refreshes the sidebar exactly once", () => {
+    const peer = `peer-read-${Date.now()}`;
+    expect(insertIncomingMessage(peer, `mr-1-${Date.now()}`, "hello", 1000)).toMatchObject({
+      inserted: true,
+    });
+    expect(getUnreadCounts()[peer]).toBe(1);
+
+    let refreshes = 0;
+    const spy = () => {
+      refreshes += 1;
+    };
+    socketBus.on("chats_changed", spy);
+    try {
+      expect(markThreadAsRead(peer, null)).toBe(true);
+    } finally {
+      socketBus.off("chats_changed", spy);
+    }
+    expect(refreshes).toBe(1);
+    expect(getUnreadCounts()[peer] ?? 0).toBe(0);
+  });
+
+  it("emits nothing when the backlog is already clean", () => {
+    const peer = `peer-clean-${Date.now()}`;
+    let refreshes = 0;
+    const spy = () => {
+      refreshes += 1;
+    };
+    socketBus.on("chats_changed", spy);
+    try {
+      expect(markThreadAsRead(peer, null)).toBe(false);
+    } finally {
+      socketBus.off("chats_changed", spy);
+    }
+    expect(refreshes).toBe(0);
   });
 });
