@@ -59,4 +59,39 @@ describe("wrapText", () => {
     const { raw } = wrapText("a\r\nb\rc", 10);
     expect(raw).toEqual(["a", "b", "c"]);
   });
+
+  // Hard-split chunk boundaries must always fall on grapheme boundaries of
+  // the original word: no torn ZWJ sequences, flags, or combining marks.
+  function expectGraphemeClean(word: string, maxWidth: number) {
+    const seg = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+    const boundaries = new Set<number>();
+    let pos = 0;
+    for (const { segment } of seg.segment(word)) {
+      pos += segment.length;
+      boundaries.add(pos);
+    }
+    const { raw } = wrapText(word, maxWidth);
+    expect(raw.join("")).toBe(word);
+    let at = 0;
+    for (const chunk of raw.slice(0, -1)) {
+      at += chunk.length;
+      expect(boundaries.has(at)).toBe(true);
+    }
+  }
+
+  it("never tears a ZWJ emoji sequence across lines", () => {
+    const family = "👨‍👩‍👧‍👦"; // 7 code points, one 2-cell grapheme
+    const { raw } = wrapText(family.repeat(3), 4);
+    // Two whole families per 4-cell line; the orphan ZWJ can never lead a chunk.
+    expect(raw).toEqual([family + family, family]);
+    expectGraphemeClean(`ab${family}cd`.repeat(3), 5);
+  });
+
+  it("keeps combining marks with their base character", () => {
+    expectGraphemeClean("abcdefghij́klmnop", 4); // j + U+0301 combining acute
+  });
+
+  it("keeps flag pairs whole when hard-splitting", () => {
+    expectGraphemeClean("ab🇺🇸cd".repeat(3), 5);
+  });
 });
