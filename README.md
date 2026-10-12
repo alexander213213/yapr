@@ -30,18 +30,31 @@ envelopes it cannot read and holds them while you are offline.
 ## Quickstart
 
 ```bash
-npm install -g @sprunkzzz/yapr   # or: npm ci && npm run build && npm link
+npm install -g @sprunkzzz/yapr   # just run `yapr`: it targets the staging
+                                 # relay out of the box and registers on first launch
+```
+
+For local dev from a checkout:
+
+```bash
+npm ci && npm run build && npm link
 cp .env.example .env             # dev scripts need a .env file present
 ```
 
-Edit `.env`:
+Edit `.env` (dev only — the packaged defaults already point at staging):
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `HOST` / `PORT` | `127.0.0.1` / `9000` | Server endpoint (TLS only) |
-| `YAPR_CA_FILE` | — | Server CA/cert for self-signed dev setups (copy the server's `dev-cert.pem`) |
-| `YAPR_INSECURE` | — | Set `1` to skip verification. Localhost dev only, never elsewhere |
+| `HOST` / `PORT` | staging relay / explicit override wins | Server endpoint (TLS only) |
+| `YAPR_CA_FILE` | — | Verify the server against this CA/cert instead of the insecure staging default |
+| `YAPR_INSECURE` | — | `1` keeps the explicit insecure escape hatch (equivalent to the default) |
 | `YAPR_DATA_DIR` | OS data dir | Override for the database + identity key |
+
+Staging transport note: until the relay gets its domain, the client skips TLS
+certificate verification by default (it says so on every launch). Message content
+stays E2EE-confidential regardless — only relay authentication is conceded.
+Run one client per user at a time: the relay single-sessions, so a second
+client signs the first out (`UNAUTH: signed in from another device`).
 
 Then:
 
@@ -108,8 +121,9 @@ Leaving passes admin to the longest-tenured member; the last one out dissolves i
 ## Troubleshooting
 
 - `yapr needs an interactive terminal` — run in a real terminal, not a pipe.
-- Stuck `○` offline — check `HOST`/`PORT` and that the server is up; TLS failures
-  (wrong CA, expired cert) also present as offline.
+- Stuck `○` offline — check `HOST`/`PORT` (packaged default is staging; a stale
+  override points at nothing) and that the server is up; with `YAPR_CA_FILE` set,
+  TLS failures (wrong CA, expired cert) also present as offline.
 - `UPGRADE_REQUIRED` toast — client/server protocol mismatch; upgrade both.
 - `Alias already taken` / `ID already exists` — pick another alias; IDs are unique.
 - Lost `identity.key` (see below) means new messages from others can't be decrypted —
