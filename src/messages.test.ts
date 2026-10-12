@@ -78,4 +78,34 @@ describe("messagesToLines", () => {
     const lines = messagesToLines(row("a\tb\r\nc"), 10, null);
     expect(lines.map(visible)).toEqual(["a  b", "c"]);
   });
+
+  it("never leads wrapped continuation lines with the eaten separator", () => {
+    // Regression: wrap points consume one space, so length-accumulated
+    // offsets sliced one char early — " bb " instead of "bb c".
+    const lines = messagesToLines(row("aaa bb c"), 4, null);
+    expect(lines).toHaveLength(2);
+    expect(visible(lines[0]!)).toBe("aaa");
+    expect(visible(lines[1]!)).toBe("bb c");
+    const joined = lines[1]!.segments.map((s) => s.text).join("");
+    expect(joined.startsWith(" ")).toBe(false);
+  });
+
+  it("keeps styles aligned across wrapped lines", () => {
+    const lines = messagesToLines(row("hey $C1[you there friend]"), 8, null);
+    expect(lines.map(visible)).toEqual(["hey you", "there", "friend"]);
+    expect(lines[0]!.segments.map((s) => s.style)).toEqual(["plain", "e1"]);
+    // Continuation lines carry the emphasis style with no leading separator.
+    expect(lines[1]!.segments[0]).toEqual({ text: "there", style: "e1" });
+    expect(lines[1]!.segments.map((s) => s.style)).toEqual(["e1", "plain"]);
+    expect(lines[2]!.segments[0]).toEqual({ text: "friend", style: "e1" });
+    expect(lines[2]!.segments.map((s) => s.style)).toEqual(["e1", "plain"]);
+  });
+
+  it("drops eaten leading blanks from indented first lines", () => {
+    const lines = messagesToLines(row("  hi"), 10, null);
+    expect(lines).toHaveLength(1);
+    const joined = lines[0]!.segments.map((s) => s.text).join("");
+    expect(joined.startsWith(" ")).toBe(false);
+    expect(visible(lines[0]!)).toBe("hi");
+  });
 });
