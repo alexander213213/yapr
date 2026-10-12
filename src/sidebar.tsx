@@ -10,6 +10,7 @@ import {
   type OpenThread,
 } from "./store.js";
 import { getTheme } from "./themes.js";
+import { isBlocked } from "./editMode.js";
 import { ThemedIndicator, ThemedItem } from "./themedSelect.js";
 import { socketBus } from "./eventStore.js";
 import { client } from "./client.js";
@@ -80,6 +81,7 @@ export default memo(function Sidebar({focused, openPeerId, setContactInfo, onOpe
 
     useInput((input, key) => {
         if(!focused) return
+        if (isBlocked()) return
         if (confirmDelete) {
             if (input === "y") {
                 const removed = confirmDelete.value

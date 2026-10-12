@@ -3,6 +3,7 @@ import TextInput from "ink-text-input";
 import { memo, useState } from "react";
 import { getSetting, setSetting, type SettingKey } from "./store.js";
 import { getTheme } from "./themes.js";
+import { useEditMode } from "./editMode.js";
 
 type Row =
   | { kind: "text"; key: "nickname"; label: string }
@@ -44,6 +45,7 @@ export default memo(function SettingsForm({
   });
   const [row, setRow] = useState(0);
   const [editing, setEditing] = useState(false);
+  useEditMode(editing);
   const theme = getTheme();
 
   const current = ROWS[Math.min(row, ROWS.length - 1)];

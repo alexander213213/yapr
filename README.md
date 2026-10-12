@@ -62,20 +62,36 @@ Then:
 npm run dev    # tsx + TUI
 ```
 
-Keys:
+Keys (shortcuts stand down while typing in any text field, except `Tab`):
 
-- `Tab` cycles sidebar → thread → details → textbox. `q` quits (outside the textbox).
-- Sidebar (open chats, `◈` = group): `↑/↓` move, `→`/`Enter` open, `c` or `≡ Contacts…`
-  opens the browser, `x` closes a chat (stays a contact), `d` deletes a contact — or
-  leaves a group — with two-step confirm, `g` starts a new group, `i` toggles details.
+- Global: `Tab` cycles sidebar → thread → details → textbox, `t` jumps straight to
+  the textbox, `q` quits, `c` contacts, `s` settings, `g` new group, `i` toggles
+  details. All but `Tab` are disabled outside the textbox while editing text.
+- Sidebar (open chats, `◈` = group): `↑/↓` move, `→`/`Enter` open, `x` closes a chat
+  (stays a contact), `d` deletes a contact — or leaves a group — with `y` to confirm.
 - Thread: `↑/↓` scroll. Opening a thread marks it read (sends receipts). Every message
-  shows its local time (`14:32 ✓✓`); older ones get a day prefix. Group messages show
+  shows its local time (`3:25 PM ✓✓`); older ones get a day prefix. Group messages show
   the sender and who has seen them.
 - Composer: `Enter` sends, `Ctrl+J` inserts a newline (multiline drafts grow to 8 rows),
-  `Shift+Enter` also inserts a newline on terminals that report it.
-- `s` opens Settings (nickname + what you reveal where + theme). First run registers you
-  automatically (identity key created locally) and identifies on every later start.
-  Your numeric ID is in the header — share it so people can add you.
+  `Shift+Enter` also inserts a newline on terminals that report it, `Backspace` erases,
+  arrows move the cursor.
+- Details (`i`): `↑/↓` move, `Enter` runs the action, `y` confirms destructive ones,
+  `i`/`Esc` close.
+- Contacts (`c`): `Enter` chat/add, `e` rename, `d` delete (`y` confirms), `a` add,
+  `/` starts filtering (plain keys act otherwise), `Backspace` edits the filter,
+  `Esc` clears the filter, then goes back.
+- Contact form: `Tab` cycles fields, `Enter` submits, `Esc` cancels.
+- Settings (`s`): `↑/↓` move, `Enter` toggles/switches/edits, `Esc` goes back. Theme
+  opens a picker: `↑/↓` preview, `Enter` applies, `Esc` cancels.
+- Group create (`g`): name first (`Enter` continues, `Esc` cancels), then members
+  (`Enter` adds, `Tab` creates, `Esc` back).
+- Group members/details views: `a` add (admin), `d` remove with `y` to confirm
+  (admin), `Enter` edits a nickname in the nicks view, `Esc` goes back.
+- History-share prompt: `y` shares the last 20 messages re-encrypted for the
+  requester, `n`/`Esc` declines; other keys are ignored.
+- First run registers you automatically (identity key created locally) and
+  identifies on every later start. Your numeric ID is in the header — share it
+  so people can add you.
 
 ## Formatting and themes
 

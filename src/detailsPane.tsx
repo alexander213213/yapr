@@ -2,6 +2,7 @@ import { Box, Text, useInput } from "ink";
 import TextInput from "ink-text-input";
 import { memo, useState } from "react";
 import { getTheme } from "./themes.js";
+import { isBlocked, useEditMode } from "./editMode.js";
 import { socketBus } from "./eventStore.js";
 import {
   closeChat,
@@ -49,6 +50,7 @@ export default memo(function DetailsPane({
   const [editing, setEditing] = useState<string | undefined>();
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | undefined>();
+  useEditMode(editing !== undefined);
   const theme = getTheme();
   const groupId = groupIdFromThreadKey(threadKey);
 
@@ -98,6 +100,7 @@ export default memo(function DetailsPane({
 
   useInput((input, key) => {
     if (!focused) return;
+    if (isBlocked()) return;
     if (editing) {
       if (key.escape) {
         setEditing(undefined);
