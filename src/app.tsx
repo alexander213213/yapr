@@ -6,6 +6,7 @@ import Sidebar from "./sidebar.js";
 import ContactsModal from "./contactsModal.js";
 import ContactsBrowser from "./contactsBrowser.js";
 import SettingsForm from "./settingsForm.js";
+import ThemePickerModal from "./themePickerModal.js";
 import GroupCreateModal from "./groupCreateModal.js";
 import GroupMembersModal from "./groupMembersModal.js";
 import GroupNicksModal from "./groupNicksModal.js";
@@ -37,7 +38,7 @@ export default memo(function App() {
     const [mode, setMode] = useState<"add" | "edit">("add")
     const [online, setOnline] = useState(false)
     const [lastError, setLastError] = useState<string | undefined>()
-    const [view, setView] = useState<"chat" | "contacts" | "settings" | "createGroup" | "members" | "nicks">("chat")
+    const [view, setView] = useState<"chat" | "contacts" | "settings" | "themePicker" | "createGroup" | "members" | "nicks">("chat")
     const [modalReturnView, setModalReturnView] = useState<"chat" | "contacts">("chat")
     const [detailsOpen, setDetailsOpen] = useState(false)
     const [historyAsk, setHistoryAsk] = useState<{ groupId: string; requester: string } | undefined>()
@@ -169,7 +170,11 @@ export default memo(function App() {
                     </Box>
                 ) : view === "settings" ? (
                     <Box width={size.cols} height={size.rows} justifyContent="center" alignItems="center" flexDirection="column">
-                        <SettingsForm onClose={() => setView("chat")} />
+                        <SettingsForm onClose={() => setView("chat")} onOpenThemePicker={() => setView("themePicker")} />
+                    </Box>
+                ) : view === "themePicker" ? (
+                    <Box width={size.cols} height={size.rows} justifyContent="center" alignItems="center" flexDirection="column">
+                        <ThemePickerModal onDone={() => setView("settings")} />
                     </Box>
                 ) : view === "createGroup" ? (
                     <Box width={size.cols} height={size.rows} justifyContent="center" alignItems="center" flexDirection="column">
