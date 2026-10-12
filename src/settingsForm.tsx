@@ -2,30 +2,21 @@ import { Box, Text, useInput } from "ink";
 import TextInput from "ink-text-input";
 import { memo, useState } from "react";
 import { getSetting, setSetting, type SettingKey } from "./store.js";
-import { getTheme, themeNames } from "./themes.js";
+import { getTheme } from "./themes.js";
 
 type Row =
   | { kind: "text"; key: "nickname"; label: string }
   | { kind: "toggle"; key: "share_nickname_gcs" | "share_nickname_dms"; label: string }
-  | { kind: "cycle"; key: "theme" | "time_format"; label: string };
+  | { kind: "cycle"; key: "time_format"; label: string }
+  | { kind: "action"; key: "theme"; label: string };
 
 const ROWS: Row[] = [
   { kind: "text", key: "nickname", label: "Nickname" },
   { kind: "toggle", key: "share_nickname_gcs", label: "Reveal nickname in groups" },
   { kind: "toggle", key: "share_nickname_dms", label: "Reveal nickname to new DMs" },
-  { kind: "cycle", key: "theme", label: "Theme" },
+  { kind: "action", key: "theme", label: "Theme" },
   { kind: "cycle", key: "time_format", label: "Time format" },
 ];
-
-const TIME_FORMAT_OPTIONS: readonly string[] = ["12", "24"];
-
-function cycleOptions(key: "theme" | "time_format"): readonly string[] {
-  return key === "theme" ? themeNames() : TIME_FORMAT_OPTIONS;
-}
-
-function cycleDisplay(key: "theme" | "time_format", value: string): string {
-  return key === "time_format" ? `${value}-hour` : value;
-}
 
 function toggleLabel(value: string): string {
   return value === "1" ? "[x]" : "[ ]";
@@ -37,7 +28,13 @@ export function normalizeNickname(value: string): string {
 }
 
 /** Local settings (nickname, reveal toggles). All device-local, works offline. */
-export default memo(function SettingsForm({ onClose }: { onClose: () => void }) {
+export default memo(function SettingsForm({
+  onClose,
+  onOpenThemePicker,
+}: {
+  onClose: () => void;
+  onOpenThemePicker: () => void;
+}) {
   const [values, setValues] = useState<Record<SettingKey, string>>({
     nickname: getSetting("nickname"),
     share_nickname_gcs: getSetting("share_nickname_gcs"),
@@ -79,12 +76,9 @@ export default memo(function SettingsForm({ onClose }: { onClose: () => void }) 
       if (current.kind === "toggle") {
         commit(current.key, values[current.key] === "1" ? "0" : "1");
       } else if (current.kind === "cycle") {
-        const options = cycleOptions(current.key);
-        const next =
-          options[(options.indexOf(values[current.key]) + 1) % options.length] ??
-          options[0] ??
-          values[current.key];
-        commit(current.key, next);
+        commit(current.key, values[current.key] === "12" ? "24" : "12");
+      } else if (current.kind === "action") {
+        onOpenThemePicker();
       } else {
         setEditing(true);
       }
@@ -108,7 +102,15 @@ export default memo(function SettingsForm({ onClose }: { onClose: () => void }) 
             );
           }
           if (r.kind === "cycle") {
-            const label = `${prefix}${r.label}: ${cycleDisplay(r.key, values[r.key])} (Enter switches)`;
+            const label = `${prefix}${r.label}: ${values[r.key]}-hour (Enter switches)`;
+            return active ? (
+              <Text key={r.key} color={theme.roles.accent}>{label}</Text>
+            ) : (
+              <Text key={r.key}>{label}</Text>
+            );
+          }
+          if (r.kind === "action") {
+            const label = `${prefix}${r.label}: ${values[r.key]} (Enter picks…)`;
             return active ? (
               <Text key={r.key} color={theme.roles.accent}>{label}</Text>
             ) : (

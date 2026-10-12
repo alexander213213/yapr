@@ -53,4 +53,9 @@ describe("themes", () => {
   it("falls back to the default theme for unknown names", () => {
     expect(getTheme().name).toBe("moss");
   });
+
+  it("uses unique names across all themes", () => {
+    const names = themeNames();
+    expect(new Set(names).size).toBe(names.length);
+  });
 });

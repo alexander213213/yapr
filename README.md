@@ -73,7 +73,9 @@ reader's own theme, so everyone agrees on *what* is emphasized:
 - `**bold**`, `` `code` `` — a lone `*` needs no escape; `\` escapes `$`, `*`, backtick
 - Unclosed markers render literally; no nesting in this version
 
-Pick a theme in Settings (`moss`, `amber`, `ocean`, `mono`). Every theme keeps the
+Pick a theme in Settings → Theme picker, with a live preview of each
+(`moss`, `amber`, `ocean`, `mono`, `plum`, `ember`, `slate`, `contrast`,
+`monokai`, `dracula`, `nord`, `gruvbox`). Every theme keeps the
 emphasis ramp ordered brightest-first, so `$C1` always outshines `$C3`.
 
 ## Contacts and keys
