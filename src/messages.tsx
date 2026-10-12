@@ -307,7 +307,7 @@ function linesToBubbles(lines: Line[], theme: Theme, hour12: boolean) {
                 <Text color={edge}>{cliBoxes.round.left}</Text>
                 {line.segments.map((seg, i) =>
                     seg.style === "code" ? (
-                        <Text key={i} dimColor>{seg.text}</Text>
+                        <Text key={i} backgroundColor={theme.roles.codeBg}>{seg.text}</Text>
                     ) : (
                         <Text key={i} {...segmentProps(seg.style, theme)}>{seg.text}</Text>
                     )

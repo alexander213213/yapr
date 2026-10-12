@@ -10,6 +10,7 @@ import {
   type OpenThread,
 } from "./store.js";
 import { getTheme } from "./themes.js";
+import { ThemedIndicator, ThemedItem } from "./themedSelect.js";
 import { socketBus } from "./eventStore.js";
 import { client } from "./client.js";
 
@@ -141,7 +142,7 @@ export default memo(function Sidebar({focused, openPeerId, setContactInfo, onOpe
 
     return (
         <Box width={"20%"} borderColor={focused ? theme.roles.borderFocused : theme.roles.borderDim} borderStyle={"round"}>
-            <SelectInput isFocused={focused} items={items} onSelect={onSelect} onHighlight={(item) => setItemFocused(item)}></SelectInput>
+            <SelectInput isFocused={focused} items={items} onSelect={onSelect} onHighlight={(item) => setItemFocused(item)} indicatorComponent={ThemedIndicator} itemComponent={ThemedItem}></SelectInput>
         </Box>
     )
 })

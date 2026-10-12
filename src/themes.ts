@@ -10,6 +10,7 @@ export type ThemeRoles = {
   e1: string;
   e2: string;
   e3: string;
+  codeBg: string;
 };
 
 export type Theme = { name: string; roles: ThemeRoles };
@@ -26,6 +27,7 @@ const MOSS: Theme = {
     e1: "#ffd75f",
     e2: "#7fd787",
     e3: "#4f87d7",
+    codeBg: "#2a3a12",
   },
 };
 
@@ -41,6 +43,7 @@ const AMBER: Theme = {
     e1: "#ffd75f",
     e2: "#ffaf5f",
     e3: "#ff87ab",
+    codeBg: "#3a2c0e",
   },
 };
 
@@ -56,6 +59,7 @@ const OCEAN: Theme = {
     e1: "#87d7ff",
     e2: "#5fb8d7",
     e3: "#5f6bd7",
+    codeBg: "#0f2740",
   },
 };
 
@@ -71,6 +75,7 @@ const MONO: Theme = {
     e1: "#ffffff",
     e2: "#b0b0b0",
     e3: "#707070",
+    codeBg: "#2e2e2e",
   },
 };
 
@@ -86,6 +91,7 @@ const PLUM: Theme = {
     e1: "#ffd75f",
     e2: "#ff87ab",
     e3: "#a06fd0",
+    codeBg: "#251838",
   },
 };
 
@@ -101,6 +107,7 @@ const EMBER: Theme = {
     e1: "#ffd75f",
     e2: "#ffab5f",
     e3: "#d76a6a",
+    codeBg: "#3d1f0c",
   },
 };
 
@@ -116,6 +123,7 @@ const SLATE: Theme = {
     e1: "#cfe3ff",
     e2: "#8fb8d7",
     e3: "#5f6b8f",
+    codeBg: "#1b2634",
   },
 };
 
@@ -131,6 +139,7 @@ const CONTRAST: Theme = {
     e1: "#ffff5f",
     e2: "#d7d7d7",
     e3: "#8a8a8a",
+    codeBg: "#242424",
   },
 };
 
@@ -146,6 +155,7 @@ const MONOKAI: Theme = {
     e1: "#E6DB74",
     e2: "#A6E22A",
     e3: "#FD971F",
+    codeBg: "#3a3b30",
   },
 };
 
@@ -161,6 +171,7 @@ const DRACULA: Theme = {
     e1: "#f1fa8c",
     e2: "#50fa7b",
     e3: "#ff79c6",
+    codeBg: "#383b4e",
   },
 };
 
@@ -176,6 +187,7 @@ const NORD: Theme = {
     e1: "#EBCB8B",
     e2: "#A3BE8C",
     e3: "#B48EAD",
+    codeBg: "#3f4757",
   },
 };
 
@@ -191,6 +203,7 @@ const GRUVBOX: Theme = {
     e1: "#ebdbb2",
     e2: "#fabd2f",
     e3: "#b8bb26",
+    codeBg: "#3c3836",
   },
 };
 

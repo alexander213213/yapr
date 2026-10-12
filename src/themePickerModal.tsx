@@ -3,6 +3,7 @@ import SelectInput from "ink-select-input";
 import { memo, useState } from "react";
 import { setSetting } from "./store.js";
 import { BUILT_IN_THEMES, getTheme } from "./themes.js";
+import { ThemedIndicator, ThemedItem } from "./themedSelect.js";
 
 /**
  * Theme picker: list on the left, live role preview on the right.
@@ -45,6 +46,8 @@ export default memo(function ThemePickerModal({ onDone }: { onDone: () => void }
             isFocused={true}
             items={items}
             initialIndex={initialIndex}
+            indicatorComponent={ThemedIndicator}
+            itemComponent={ThemedItem}
             onHighlight={(item) => setPreviewName(item.value)}
             onSelect={(item) => {
               setSetting("theme", item.value);
@@ -66,6 +69,9 @@ export default memo(function ThemePickerModal({ onDone }: { onDone: () => void }
             <Text color={preview.roles.e1}>e1 Aa </Text>
             <Text color={preview.roles.e2}>e2 Aa </Text>
             <Text color={preview.roles.e3}>e3 Aa</Text>
+          </Text>
+          <Text>
+            <Text backgroundColor={preview.roles.codeBg}>{"`code`"}</Text>
           </Text>
           <Box marginTop={1} flexDirection="column">
             <Text>
