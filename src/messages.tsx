@@ -188,11 +188,7 @@ export default memo(function MessagesBox({ focused, contactInfo, availableHeight
 
         const markOpenThreadRead = () => {
             if (!threadKey) return
-            const ids = threadGroupId ? markGroupThreadRead(threadGroupId) : markThreadRead(threadKey)
-            if (ids.length === 0) return
-            for (const id of ids) {
-                sendReadReceipt(id)
-            }
+            if (!markThreadAsRead(threadKey, threadGroupId)) return
             setMessages(prev => {
                 return prev.map(msg => {
                     if (msg.direction === "in" && msg.status === "received") {
@@ -376,6 +372,22 @@ function linesToBubbles(lines: Line[], theme: Theme) {
     })
     return Boxes
 
+}
+
+/**
+ * Flip the open thread's inbound backlog to read and receipt each message.
+ * Emits chats_changed so the sidebar recomputes its unread badges
+ * immediately — otherwise the badge lingers until the next bus event.
+ * Returns true when anything flipped.
+ */
+export function markThreadAsRead(threadKey: string, threadGroupId: string | null): boolean {
+    const ids = threadGroupId ? markGroupThreadRead(threadGroupId) : markThreadRead(threadKey);
+    if (ids.length === 0) return false;
+    for (const id of ids) {
+        sendReadReceipt(id);
+    }
+    socketBus.emit("chats_changed");
+    return true;
 }
 
 export function messagesToLines(message: MessageRow, maxWidth: number, threadGroupId: string | null) {
