@@ -96,6 +96,7 @@ describe("store threads", () => {
     expect(getSetting("share_nickname_gcs")).toBe("1");
     expect(getSetting("share_nickname_dms")).toBe("0");
     expect(getSetting("theme")).toBe("moss");
+    expect(getSetting("time_format")).toBe("12");
     setSetting("nickname", "tester");
     expect(getSetting("nickname")).toBe("tester");
   });
