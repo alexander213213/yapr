@@ -32,10 +32,54 @@ import type { MessageRow } from "./types.js";
 
 export type ConnState = "offline" | "connecting" | "online";
 
-const HOST = process.env.HOST ?? "127.0.0.1";
-const PORT = Number(process.env.PORT ?? "9000");
-if (!Number.isInteger(PORT) || PORT <= 0 || PORT > 65535) {
-  throw new Error(`Invalid PORT: ${process.env.PORT ?? "(unset)"}`);
+/** Packaged default: the staging relay. Explicit HOST/PORT always win. */
+export const DEFAULT_HOST = "nozomi.proxy.rlwy.net";
+export const DEFAULT_PORT = 15038;
+
+export type Endpoint = { host: string; port: number; fromDefault: boolean };
+
+export function resolveEndpoint(env: NodeJS.ProcessEnv = process.env): Endpoint {
+  const host = env.HOST?.trim() || DEFAULT_HOST;
+  const port = Number(env.PORT ?? String(DEFAULT_PORT));
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+    throw new Error(`Invalid PORT: ${env.PORT ?? "(unset)"}`);
+  }
+  return { host, port, fromDefault: !env.HOST && env.PORT === undefined };
+}
+
+export type TlsSource = "ca-file" | "insecure-explicit" | "insecure-default";
+export type TlsTrust = { options: tls.ConnectionOptions; verified: boolean; source: TlsSource };
+
+export function resolveTlsOptions(
+  env: NodeJS.ProcessEnv = process.env,
+  readFile: (path: string) => string = (p) => fs.readFileSync(p, "utf8")
+): TlsTrust {
+  const caFile = env.YAPR_CA_FILE?.trim();
+  if (caFile) {
+    return { options: { ca: readFile(caFile) }, verified: true, source: "ca-file" };
+  }
+  // Staging default until the domain lands: the relay's cert is self-signed,
+  // so verification would fail for every default install. Message content
+  // stays E2EE-confidential regardless; only relay authentication is
+  // conceded. Set YAPR_CA_FILE to verify.
+  const insecure = { rejectUnauthorized: false };
+  if (env.YAPR_INSECURE === "1") {
+    return { options: insecure, verified: false, source: "insecure-explicit" };
+  }
+  return { options: insecure, verified: false, source: "insecure-default" };
+}
+
+const { host: HOST, port: PORT } = resolveEndpoint();
+const trust = resolveTlsOptions();
+if (!process.env.VITEST) {
+  // Runs at import, before the TUI takes the screen (same as the data-dir log).
+  console.log(
+    `yapr endpoint ${HOST}:${PORT} (${
+      trust.verified
+        ? "TLS verified"
+        : "TLS verification OFF — staging default until the domain lands; set YAPR_CA_FILE to verify"
+    })`
+  );
 }
 
 const MAX_FRAME_BYTES = Number(process.env.MAX_FRAME_BYTES ?? 64 * 1024);
@@ -44,15 +88,7 @@ const RECONNECT_MAX_MS = 30_000;
 const KEYS_TIMEOUT_MS = 10_000;
 
 function tlsOptions(): tls.ConnectionOptions {
-  const caFile = process.env.YAPR_CA_FILE;
-  if (caFile) {
-    return { ca: fs.readFileSync(caFile, "utf8") };
-  }
-  if (process.env.YAPR_INSECURE === "1") {
-    return { rejectUnauthorized: false };
-  }
-  // System CAs: works with real production certs, fails loudly on self-signed.
-  return {};
+  return trust.options;
 }
 
 function backoffDelay(attempt: number): number {
