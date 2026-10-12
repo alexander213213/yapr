@@ -38,19 +38,25 @@ export function wrapText(
   };
 }
 
-/** Split a string into chunks of at most maxWidth cells, never splitting a char. */
+const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+/**
+ * Split a string into chunks of at most maxWidth cells, never splitting a
+ * grapheme cluster (ZWJ emoji sequences, flag pairs, combining marks stay
+ * whole — splitting them renders tofu/orphaned halves).
+ */
 function splitByWidth(word: string, maxWidth: number): string[] {
   const chunks: string[] = [];
   let current = "";
   let width = 0;
-  for (const ch of word) {
-    const w = Math.max(1, stringWidth(ch));
+  for (const { segment } of segmenter.segment(word)) {
+    const w = Math.max(1, stringWidth(segment));
     if (width + w > maxWidth && current) {
       chunks.push(current);
       current = "";
       width = 0;
     }
-    current += ch;
+    current += segment;
     width += w;
   }
   if (current) chunks.push(current);

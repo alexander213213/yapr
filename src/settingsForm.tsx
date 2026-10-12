@@ -20,6 +20,11 @@ function toggleLabel(value: string): string {
   return value === "1" ? "[x]" : "[ ]";
 }
 
+/** Nicknames render bare in sender headers: never store leading/trailing blanks. */
+export function normalizeNickname(value: string): string {
+  return value.trim();
+}
+
 /** Local settings (nickname, reveal toggles). All device-local, works offline. */
 export default memo(function SettingsForm({ onClose }: { onClose: () => void }) {
   const [values, setValues] = useState<Record<SettingKey, string>>({
@@ -106,7 +111,7 @@ export default memo(function SettingsForm({ onClose }: { onClose: () => void }) 
               {active && editing ? (
                 <TextInput
                   value={values.nickname}
-                  onChange={(v) => commit("nickname", v)}
+                  onChange={(v) => commit("nickname", normalizeNickname(v))}
                   focus={true}
                   placeholder="callsign"
                   onSubmit={() => setEditing(false)}

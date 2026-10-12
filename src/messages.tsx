@@ -378,34 +378,52 @@ function linesToBubbles(lines: Line[], theme: Theme) {
 
 }
 
-function messagesToLines(message: MessageRow, maxWidth: number, threadGroupId: string | null) {
-    const segments = parseMarkup(message.text);
-    const visible = stripMarkup(message.text);
-    const { raw, longest } = wrapText(visible, maxWidth);
+export function messagesToLines(message: MessageRow, maxWidth: number, threadGroupId: string | null) {
+    // Normalize exactly like wrapText so paragraph splits align with it.
+    const normalized = message.text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\t/g, "  ");
 
-    return raw.map<Line>((value, index, arr) => {
-        let offset = 0;
-        for (let k = 0; k < index; k++) {
-            offset += (arr[k]?.length ?? 0);
-        }
-        return {
-            segments: padSegments(sliceSegments(segments, offset, value.length), longest),
-            messageId: `${message.client_message_id ?? message.message_id ?? message.id}`,
-            direction: message.direction,
-            isFirstLine: index === 0,
-            isLastLine: arr.length - 1 === index,
-            status: message.status,
-            createdAt: message.created_at,
-            sender:
-                message.direction === "in" && threadGroupId
-                    ? displayNameFor(threadGroupId, message.peer_id, message.sender_nick ?? null)
-                    : null,
-            readers:
-                message.direction === "out" && threadGroupId && message.message_id
-                    ? readersForMessage(message.message_id)
-                    : [],
-            longest: longest,
-            lineIndex: index
-        } as Line;
+    // Slice styled runs per paragraph with offsets restarting at zero:
+    // wrapText consumes the "\n" separators, so a running offset over the
+    // whole text would drift one char per preceding newline — leaking the
+    // newline to the front of each continuation line and dropping its last
+    // character.
+    const perPara = normalized.split("\n").map((para) => {
+        const segments = parseMarkup(para);
+        const { raw, longest } = wrapText(stripMarkup(para), maxWidth);
+        return { segments, raw, longest };
     });
+
+    const longest = Math.max(0, ...perPara.map((p) => p.longest));
+    const total = perPara.reduce((n, p) => n + p.raw.length, 0);
+    const messageId = `${message.client_message_id ?? message.message_id ?? message.id}`;
+
+    const lines: Line[] = [];
+    let index = 0;
+    for (const { segments, raw } of perPara) {
+        let offset = 0;
+        for (const value of raw) {
+            lines.push({
+                segments: padSegments(sliceSegments(segments, offset, value.length), longest),
+                messageId,
+                direction: message.direction,
+                isFirstLine: index === 0,
+                isLastLine: index === total - 1,
+                status: message.status,
+                createdAt: message.created_at,
+                sender:
+                    message.direction === "in" && threadGroupId
+                        ? displayNameFor(threadGroupId, message.peer_id, message.sender_nick ?? null)
+                        : null,
+                readers:
+                    message.direction === "out" && threadGroupId && message.message_id
+                        ? readersForMessage(message.message_id)
+                        : [],
+                longest: longest,
+                lineIndex: index
+            } as Line);
+            offset += value.length;
+            index++;
+        }
+    }
+    return lines;
 }
