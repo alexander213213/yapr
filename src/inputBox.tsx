@@ -5,7 +5,6 @@ import {
   cursorPosition,
   emptyEditor,
   eraseBackward,
-  eraseForward,
   insertText,
   moveDown,
   moveLeft,
@@ -45,12 +44,11 @@ export default memo(function ChatInput({
       setDraft((d) => insertText(d, "\n"));
       return;
     }
-    if (key.backspace) {
+    // Ink maps both Backspace (DEL) and the Delete key to key.delete, with no
+    // way to tell them apart — so both erase backward. A dead Backspace is
+    // worse than a Delete key that behaves like one.
+    if (key.backspace || key.delete) {
       setDraft(eraseBackward);
-      return;
-    }
-    if (key.delete) {
-      setDraft(eraseForward);
       return;
     }
     if (key.leftArrow) {
