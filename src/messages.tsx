@@ -382,15 +382,15 @@ export function messagesToLines(message: MessageRow, maxWidth: number, threadGro
     // Normalize exactly like wrapText so paragraph splits align with it.
     const normalized = message.text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\t/g, "  ");
 
-    // Slice styled runs per paragraph with offsets restarting at zero:
-    // wrapText consumes the "\n" separators, so a running offset over the
-    // whole text would drift one char per preceding newline — leaking the
-    // newline to the front of each continuation line and dropping its last
-    // character.
+    // Slice styled runs per paragraph using the start offsets wrapText
+    // reports: wrapping consumes the separator space at each wrap point
+    // (and the "\n" between paragraphs), so accumulating line lengths as
+    // offsets drifts one char per boundary — leaking the separator to the
+    // front of each continuation line and dropping its last character.
     const perPara = normalized.split("\n").map((para) => {
         const segments = parseMarkup(para);
-        const { raw, longest } = wrapText(stripMarkup(para), maxWidth);
-        return { segments, raw, longest };
+        const { raw, longest, starts } = wrapText(stripMarkup(para), maxWidth);
+        return { segments, raw, longest, starts };
     });
 
     const longest = Math.max(0, ...perPara.map((p) => p.longest));
@@ -399,11 +399,12 @@ export function messagesToLines(message: MessageRow, maxWidth: number, threadGro
 
     const lines: Line[] = [];
     let index = 0;
-    for (const { segments, raw } of perPara) {
-        let offset = 0;
-        for (const value of raw) {
+    for (const { segments, raw, starts } of perPara) {
+        for (let i = 0; i < raw.length; i++) {
+            const value = raw[i] ?? "";
+            const start = starts[i] ?? 0;
             lines.push({
-                segments: padSegments(sliceSegments(segments, offset, value.length), longest),
+                segments: padSegments(sliceSegments(segments, start, value.length), longest),
                 messageId,
                 direction: message.direction,
                 isFirstLine: index === 0,
@@ -421,7 +422,6 @@ export function messagesToLines(message: MessageRow, maxWidth: number, threadGro
                 longest: longest,
                 lineIndex: index
             } as Line);
-            offset += value.length;
             index++;
         }
     }

@@ -3,7 +3,7 @@ import { wrapText } from "./wrap.js";
 
 describe("wrapText", () => {
   it("returns no lines for non-positive widths", () => {
-    expect(wrapText("hello", 0)).toEqual({ lines: [], longest: 0, raw: [] });
+    expect(wrapText("hello", 0)).toEqual({ lines: [], longest: 0, raw: [], starts: [] });
   });
 
   it("wraps on word boundaries and pads to the longest line", () => {
@@ -58,6 +58,32 @@ describe("wrapText", () => {
   it("normalizes CRLF line endings", () => {
     const { raw } = wrapText("a\r\nb\rc", 10);
     expect(raw).toEqual(["a", "b", "c"]);
+  });
+
+  it("reports source offsets past consumed wrap separators", () => {
+    // The space at each wrap point belongs to neither line: "aaa bb c"
+    // wraps to [0..3) and [4..8), not [3..7).
+    const { raw, starts } = wrapText("aaa bb c", 4);
+    expect(raw).toEqual(["aaa", "bb c"]);
+    expect(starts).toEqual([0, 4]);
+  });
+
+  it("reports offsets for hard-split words and mixed lines", () => {
+    const { raw, starts } = wrapText("ab cdefghij kl", 4);
+    expect(raw).toEqual(["ab", "cdef", "ghij", "kl"]);
+    expect(starts).toEqual([0, 3, 7, 12]);
+  });
+
+  it("skips eaten leading blanks in offsets", () => {
+    const { raw, starts } = wrapText("  hi", 10);
+    expect(raw).toEqual(["hi"]);
+    expect(starts).toEqual([2]);
+  });
+
+  it("reports global offsets across paragraphs", () => {
+    const { raw, starts } = wrapText("aaa bb\ncc", 4);
+    expect(raw).toEqual(["aaa", "bb", "cc"]);
+    expect(starts).toEqual([0, 4, 7]);
   });
 
   // Hard-split chunk boundaries must always fall on grapheme boundaries of
