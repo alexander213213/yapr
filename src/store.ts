@@ -305,6 +305,7 @@ export const DEFAULT_SETTINGS = {
   share_nickname_gcs: "1",
   share_nickname_dms: "0",
   theme: "moss",
+  time_format: "12",
 } as const;
 export type SettingKey = keyof typeof DEFAULT_SETTINGS;
 

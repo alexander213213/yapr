@@ -8,6 +8,7 @@ import {
   displayNameFor,
   getAllMessagesByPeerId,
   getGroupMessages,
+  getSetting,
   groupIdFromThreadKey,
   insertPendingMessage,
   markGroupThreadRead,
@@ -82,6 +83,7 @@ export default memo(function MessagesBox({ focused, contactInfo, availableHeight
 
 
     const theme = getTheme();
+    const hour12 = getSetting("time_format") !== "24";
 
     const lines = useMemo(() => {
         return messages.flatMap((msg) =>
@@ -90,8 +92,8 @@ export default memo(function MessagesBox({ focused, contactInfo, availableHeight
     }, [messages, stdout.columns, threadGroupId]);
 
     const bubbleLines = useMemo(() => {
-        return linesToBubbles(lines, theme);
-    }, [lines, theme]);
+        return linesToBubbles(lines, theme, hour12);
+    }, [lines, theme, hour12]);
 
     const maxOffset = Math.max(0, bubbleLines.length - height)
 
@@ -287,7 +289,7 @@ function segmentProps(style: SegmentStyle, theme: Theme): object {
     }
 }
 
-function linesToBubbles(lines: Line[], theme: Theme) {
+function linesToBubbles(lines: Line[], theme: Theme, hour12: boolean) {
     const Boxes = lines.flatMap((line) => {
         const result: (BubbleLine | LineBreak | StatusLine)[] = []
         if (line.isFirstLine && line.sender) {
@@ -359,7 +361,7 @@ function linesToBubbles(lines: Line[], theme: Theme) {
                           line.readers.length > 2 ? ` +${line.readers.length - 2}` : ""
                       }`
                     : ""
-            const meta = `${formatMessageTime(line.createdAt)}${glyph ? ` ${glyph}` : ""}${seen}`
+            const meta = `${formatMessageTime(line.createdAt, Date.now(), hour12)}${glyph ? ` ${glyph}` : ""}${seen}`
             result.push({
                 text: (<Text dimColor>{meta}</Text>),
                 direction: line.direction,
