@@ -7,6 +7,33 @@ import type { ContactsRow } from "./types.js";
 
 export type PickResult = { picked: string[] };
 
+export type BrowserKeyAction = "delete" | "edit" | "add" | "filter" | "ignore";
+
+/**
+ * Decide what a keypress means in the browser. Manage mode reserves plain
+ * d/e/a for actions, so free typing only filters inside `/` filter mode
+ * (otherwise typing "dan" would arm a delete confirm on `d`). Picker mode
+ * has no action keys, so printable keys always filter there.
+ */
+export function resolveBrowserKey(args: {
+  input: string;
+  ctrl: boolean;
+  meta: boolean;
+  pickMode: boolean;
+  filtering: boolean;
+  hasCurrent: boolean;
+}): BrowserKeyAction {
+  const { input, ctrl, meta, pickMode, filtering, hasCurrent } = args;
+  if (!pickMode && !filtering) {
+    if (input === "d" && hasCurrent) return "delete";
+    if (input === "e" && hasCurrent) return "edit";
+    if (input === "a") return "add";
+    return "ignore";
+  }
+  if (input && input.length === 1 && !ctrl && !meta) return "filter";
+  return "ignore";
+}
+
 /**
  * Contacts browser. Manage mode is the full list with chat/delete/rename/add.
  * Picker mode (GC member selection) filters out excluded ids, Enter adds the
@@ -32,6 +59,7 @@ export default memo(function ContactsBrowser({
   const [contacts, setContacts] = useState(getAllContacts());
   const [highlight, setHighlight] = useState(0);
   const [filter, setFilter] = useState("");
+  const [filtering, setFiltering] = useState(false);
   const [picked, setPicked] = useState<string[]>([]);
   const [confirmDelete, setConfirmDelete] = useState<ContactsRow | undefined>();
   const theme = getTheme();
@@ -68,8 +96,9 @@ export default memo(function ContactsBrowser({
       return;
     }
     if (key.escape) {
-      if (filter) {
+      if (filter || filtering) {
         setFilter("");
+        setFiltering(false);
         return;
       }
       onClose();
@@ -102,21 +131,31 @@ export default memo(function ContactsBrowser({
       setHighlight(0);
       return;
     }
-    if (!pickMode) {
-      if (input === "d" && current) {
-        setConfirmDelete(current);
-        return;
-      }
-      if (input === "e" && current) {
-        onEdit?.(current);
-        return;
-      }
-      if (input === "a") {
-        onAdd?.();
-        return;
-      }
+    if (input === "/" && !pickMode) {
+      setFiltering(true);
+      return;
     }
-    if (input && input.length === 1 && !key.ctrl && !key.meta) {
+    const action = resolveBrowserKey({
+      input,
+      ctrl: key.ctrl,
+      meta: key.meta,
+      pickMode: !!pickMode,
+      filtering,
+      hasCurrent: !!current,
+    });
+    if (action === "delete" && current) {
+      setConfirmDelete(current);
+      return;
+    }
+    if (action === "edit" && current) {
+      onEdit?.(current);
+      return;
+    }
+    if (action === "add") {
+      onAdd?.();
+      return;
+    }
+    if (action === "filter") {
       setFilter((f) => (f + input).slice(0, 32));
       setHighlight(0);
     }
@@ -139,9 +178,9 @@ export default memo(function ContactsBrowser({
       <Text dimColor>
         {pickMode
           ? "type to filter · Enter add · Esc done"
-          : "Enter chat · e rename · d delete · a add · type filters · Esc back"}
+          : "Enter chat · e rename · d delete · a add · / filter · Esc back"}
       </Text>
-      {filter ? <Text dimColor>Filter: {filter}</Text> : null}
+      {filter || filtering ? <Text dimColor>Filter: {filter}</Text> : null}
       <Box flexDirection="column" marginTop={1}>
         {visible.length === 0 ? (
           <Text dimColor>No matches.</Text>

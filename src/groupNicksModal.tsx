@@ -2,6 +2,7 @@ import { Box, Text, useInput } from "ink";
 import TextInput from "ink-text-input";
 import { memo, useState } from "react";
 import { getTheme } from "./themes.js";
+import { useEditMode } from "./editMode.js";
 import {
   displayNameFor,
   getGroupCache,
@@ -27,6 +28,7 @@ export default memo(function GroupNicksModal({
   const [highlight, setHighlight] = useState(0);
   const [editing, setEditing] = useState<string | undefined>();
   const [draft, setDraft] = useState("");
+  useEditMode(editing !== undefined);
   const theme = getTheme();
   const ownId = getSessionUser()?.user_id;
   const group = getGroupCache(groupId);

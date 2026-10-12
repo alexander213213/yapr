@@ -3,6 +3,7 @@ import TextInput from "ink-text-input";
 import { memo, useState } from "react";
 import ContactsBrowser from "./contactsBrowser.js";
 import { getTheme } from "./themes.js";
+import { useEditMode } from "./editMode.js";
 import { client } from "./client.js";
 
 /**
@@ -14,6 +15,7 @@ export default memo(function GroupCreateModal({ onDone }: { onDone: (groupId: st
   const [phase, setPhase] = useState<"name" | "pick">("name");
   const [picked, setPicked] = useState<string[]>([]);
   const [error, setError] = useState<string | undefined>();
+  useEditMode(phase === "name");
   const theme = getTheme();
 
   useInput((input, key) => {

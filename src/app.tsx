@@ -14,6 +14,7 @@ import HistoryApproveModal from "./historyApproveModal.js";
 import DetailsPane from "./detailsPane.js";
 import ChatInput from "./inputBox.js";
 import { getTheme } from "./themes.js";
+import { isBlocked, isEditingText } from "./editMode.js";
 import { socketBus } from "./eventStore.js";
 import { findUserStmt, groupIdFromThreadKey, groupThreadKey, openChat } from "./store.js";
 import type { HistoryRequestFrame } from "./protocol.js";
@@ -96,25 +97,33 @@ export default memo(function App() {
 
     useInput((input, key) => {
         if (view !== "chat" || showContactModal || historyAsk) return
-        if (input === "q" && focused !== "textbox") {
+        // Letter shortcuts stand down while a text field is edited anywhere
+        // or a modal owns the screen (Ink broadcasts to every handler).
+        // Tab intentionally keeps working so composer focus-cycling is unaffected.
+        const shortcutsLive = focused !== "textbox" && !isEditingText() && !isBlocked()
+        if (input === "q" && shortcutsLive) {
             exit();
         }
-        if (input === "c" && focused !== "textbox") {
+        if (input === "c" && shortcutsLive) {
             setView("contacts")
             return
         }
-        if (input === "s" && focused !== "textbox") {
+        if (input === "s" && shortcutsLive) {
             setView("settings")
             return
         }
-        if (input === "g" && focused !== "textbox") {
+        if (input === "g" && shortcutsLive) {
             setView("createGroup")
             return
         }
-        if (input === "i" && focused !== "textbox") {
+        if (input === "i" && shortcutsLive) {
             if (contactInfo) {
                 setDetailsOpen((open) => !open)
             }
+            return
+        }
+        if (input === "t" && shortcutsLive) {
+            setFocus("textbox")
             return
         }
         if (key.tab) {

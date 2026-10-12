@@ -20,6 +20,7 @@ import { sendChatText, sendGroupText, sendReadReceipt } from "./client.js";
 import { formatMessageTime } from "./format.js";
 import { parseMarkup, padSegments, sliceSegments, stripMarkup, type Segment, type SegmentStyle } from "./markup.js";
 import { getTheme, type Theme } from "./themes.js";
+import { isBlocked } from "./editMode.js";
 import { socketBus } from "./eventStore.js";
 
 export type Line = {
@@ -228,6 +229,7 @@ export default memo(function MessagesBox({ focused, contactInfo, availableHeight
 
     useInput((input, key) => {
         if (!focused) return
+        if (isBlocked()) return
         if (key.downArrow) {
             setOffset(prev => Math.min(maxOffset, prev + 1))
         } else if (key.upArrow) {
