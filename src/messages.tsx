@@ -17,7 +17,7 @@ import {
 } from "./store.js";
 import { sendChatText, sendGroupText, sendReadReceipt } from "./client.js";
 import { formatMessageTime } from "./format.js";
-import { parseMarkup, sliceSegments, stripMarkup, type Segment, type SegmentStyle } from "./markup.js";
+import { parseMarkup, padSegments, sliceSegments, stripMarkup, type Segment, type SegmentStyle } from "./markup.js";
 import { getTheme, type Theme } from "./themes.js";
 import { socketBus } from "./eventStore.js";
 
@@ -389,7 +389,7 @@ function messagesToLines(message: MessageRow, maxWidth: number, threadGroupId: s
             offset += (arr[k]?.length ?? 0);
         }
         return {
-            segments: sliceSegments(segments, offset, value.length),
+            segments: padSegments(sliceSegments(segments, offset, value.length), longest),
             messageId: `${message.client_message_id ?? message.message_id ?? message.id}`,
             direction: message.direction,
             isFirstLine: index === 0,

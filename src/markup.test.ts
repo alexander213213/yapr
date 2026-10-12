@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseMarkup, sliceSegments, stripMarkup } from "./markup.js";
+import { padSegments, parseMarkup, segmentsWidth, sliceSegments, stripMarkup } from "./markup.js";
 
 describe("parseMarkup", () => {
   it("leaves plain text alone (lone asterisks need no escape)", () => {
@@ -50,6 +50,23 @@ describe("parseMarkup", () => {
 
   it("strips markers for width math", () => {
     expect(stripMarkup("hey $C1[you] **there**")).toBe("hey you there");
+  });
+
+  it("measures styled runs in terminal cells", () => {
+    expect(segmentsWidth([{ text: "日本", style: "plain" }])).toBe(4);
+    expect(segmentsWidth([{ text: "ab", style: "e1" }])).toBe(2);
+  });
+
+  it("pads styled lines without touching existing runs", () => {
+    const segs = [
+      { text: "hi", style: "e1" as const },
+      { text: "日", style: "plain" as const },
+    ];
+    // Rendered width 2 + 2 = 4; pad to 6 appends a plain 2-space run.
+    expect(padSegments(segs, 6)).toEqual([...segs, { text: "  ", style: "plain" }]);
+    // Already wide enough: returned as-is (same reference).
+    expect(padSegments(segs, 4)).toBe(segs);
+    expect(padSegments(segs, 2)).toBe(segs);
   });
 
   it("slices styled runs by visible offsets", () => {
