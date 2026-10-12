@@ -1,3 +1,5 @@
+import stringWidth from "string-width";
+
 /**
  * Minimal emphasis markup, parsed at render time:
  *   $C1[...] $C2[...] $C3[...]  (ordered emphasis, theme-colored)
@@ -90,6 +92,26 @@ export function stripMarkup(input: string): string {
   return parseMarkup(input)
     .map((s) => s.text)
     .join("");
+}
+
+/** Cell width of rendered segments (styling contributes zero width). */
+export function segmentsWidth(segments: Segment[]): number {
+  let width = 0;
+  for (const seg of segments) {
+    width += stringWidth(seg.text);
+  }
+  return width;
+}
+
+/**
+ * Pad a styled line to a target cell width with a trailing plain run, so every
+ * content row exactly fills the bubble borders. Styling of existing runs is
+ * untouched (padding a joined string would swallow trailing styles).
+ */
+export function padSegments(segments: Segment[], width: number): Segment[] {
+  const missing = width - segmentsWidth(segments);
+  if (missing <= 0) return segments;
+  return [...segments, { text: " ".repeat(missing), style: "plain" as const }];
 }
 
 /** Slice styled runs by visible character offsets (re-applying styles post-wrap). */
