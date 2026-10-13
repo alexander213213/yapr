@@ -552,6 +552,10 @@ class YaprClient {
     } else if (store.ensureContact(frame.from)) {
       socketBus.emit("new_contact");
     }
+    if (!frame.groupId && nick) {
+      // DM only: surface a newcomer's advertised name (blank aliases only).
+      store.adoptAdvertisedNick(frame.from, nick);
+    }
     if (stored.inserted) {
       const msg: MessageRow = {
         id: stored.rowId,

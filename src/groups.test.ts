@@ -37,12 +37,12 @@ process.env.YAPR_DATA_DIR = TEST_DIR;
 await import("./db.js");
 const store = await import("./store.js");
 
-describe("v3 to v4 migration", () => {
+describe("v3 to latest migration", () => {
   it("adds group filing without losing rows", () => {
     const db = new DatabaseSync(path.join(TEST_DIR, "yapr.db"), { readOnly: true });
     try {
       expect(db.prepare("SELECT version FROM schema_version").get()).toMatchObject({
-        version: 4,
+        version: 5,
       });
       const cols = db.prepare(`PRAGMA table_info(messages)`).all() as { name: string }[];
       expect(cols.some((c) => c.name === "group_id")).toBe(true);
