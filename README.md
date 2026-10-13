@@ -15,7 +15,8 @@ envelopes it cannot read and holds them while you are offline.
 - **Terminal UI** — sidebar chats with unread badges, chat bubbles, scrollback,
   contacts browser, group threads with sender names and seen-by ticks, details pane
   (`i`), online (`●`) / offline (`○`) indicator, server errors as transient toasts.
-  Reconnects with backoff and keeps retrying.
+  Reconnects with backoff and keeps retrying, always showing the latest retry
+  reason under the header so a dead server never looks like a hang.
 - **Group chats** — creator-admin groups up to 50, pairwise E2EE per member, offline
   replay, per-member read tracking, nicknames (advertised or local-only), and
   member-approved history sharing for newcomers.
