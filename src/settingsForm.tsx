@@ -1,7 +1,10 @@
 import { Box, Text, useInput } from "ink";
 import TextInput from "ink-text-input";
 import { memo, useState } from "react";
-import { getSetting, setSetting, type SettingKey } from "./store.js";
+import { clearSession, getSetting, setSetting, type SettingKey } from "./store.js";
+import { deleteReclaimToken, resolveDataDir } from "./storage.js";
+import { client } from "./client.js";
+import AccountResetModal from "./accountResetModal.js";
 import { getTheme } from "./themes.js";
 import { useEditMode } from "./editMode.js";
 
@@ -9,7 +12,8 @@ type Row =
   | { kind: "text"; key: "nickname"; label: string }
   | { kind: "toggle"; key: "share_nickname_gcs" | "share_nickname_dms"; label: string }
   | { kind: "cycle"; key: "time_format"; label: string }
-  | { kind: "action"; key: "theme"; label: string };
+  | { kind: "action"; key: "theme"; label: string }
+  | { kind: "reset"; key: "reset"; label: string };
 
 const ROWS: Row[] = [
   { kind: "text", key: "nickname", label: "Nickname" },
@@ -17,6 +21,7 @@ const ROWS: Row[] = [
   { kind: "toggle", key: "share_nickname_dms", label: "Reveal nickname to new DMs" },
   { kind: "action", key: "theme", label: "Theme" },
   { kind: "cycle", key: "time_format", label: "Time format" },
+  { kind: "reset", key: "reset", label: "Reset account" },
 ];
 
 function toggleLabel(value: string): string {
@@ -46,6 +51,10 @@ export default memo(function SettingsForm({
   });
   const [row, setRow] = useState(0);
   const [editing, setEditing] = useState(false);
+  // The reset confirm modal owns its keys while mounted (same pattern as
+  // `editing` above): without this early return, Esc would leave Settings
+  // instead of just dismissing the modal (Ink broadcasts to every handler).
+  const [confirmingReset, setConfirmingReset] = useState(false);
   useEditMode(editing);
   const theme = getTheme();
 
@@ -57,7 +66,26 @@ export default memo(function SettingsForm({
     setValues((prev) => ({ ...prev, [key]: value }));
   };
 
+  /**
+   * Drop the session (all rows) and the old recovery token, then reconnect:
+   * with no session the client registers a brand-new id. Messages, contacts,
+   * groups and the identity key are kept; group re-adding stays manual.
+   */
+  const doResetAccount = () => {
+    clearSession();
+    try {
+      deleteReclaimToken(resolveDataDir());
+    } catch {
+      // Best effort; a stale token only matters if the server wipes again.
+    }
+    setConfirmingReset(false);
+    onClose();
+    client.stop();
+    client.start();
+  };
+
   useInput((input, key) => {
+    if (confirmingReset) return;
     if (key.escape) {
       if (editing) {
         setEditing(false);
@@ -80,6 +108,8 @@ export default memo(function SettingsForm({
         commit(current.key, values[current.key] === "1" ? "0" : "1");
       } else if (current.kind === "cycle") {
         commit(current.key, values[current.key] === "12" ? "24" : "12");
+      } else if (current.kind === "reset") {
+        setConfirmingReset(true);
       } else if (current.kind === "action") {
         onOpenThemePicker();
       } else {
@@ -87,6 +117,15 @@ export default memo(function SettingsForm({
       }
     }
   });
+
+  if (confirmingReset) {
+    return (
+      <AccountResetModal
+        onConfirm={doResetAccount}
+        onClose={() => setConfirmingReset(false)}
+      />
+    );
+  }
 
   return (
     <Box width={"60%"} borderColor={theme.roles.borderFocused} borderStyle={"round"} flexDirection="column" paddingX={2} paddingY={1}>
@@ -118,6 +157,14 @@ export default memo(function SettingsForm({
               <Text key={r.key} color={theme.roles.accent}>{label}</Text>
             ) : (
               <Text key={r.key}>{label}</Text>
+            );
+          }
+          if (r.kind === "reset") {
+            const label = `${prefix}${r.label}…`;
+            return active ? (
+              <Text key={r.key} color={theme.roles.danger}>{label}</Text>
+            ) : (
+              <Text key={r.key} dimColor>{label}</Text>
             );
           }
           const nameLabel = `${prefix}${r.label}: `;

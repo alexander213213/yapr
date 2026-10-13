@@ -15,6 +15,7 @@ const UID = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 const {
   addNewContact,
   adoptAdvertisedNick,
+  clearSession,
   closeChat,
   deleteContact,
   findContact,
@@ -22,6 +23,7 @@ const {
   getGroupEarliestCreatedAt,
   getGroupMessagesBefore,
   getOpenChats,
+  getSessionUser,
   getSetting,
   getUnreadCounts,
   insertIncomingMessage,
@@ -29,6 +31,7 @@ const {
   markInboundMessageRead,
   markThreadRead,
   openChat,
+  saveSessionUser,
   setSetting,
 } = await import("./store.js");
 
@@ -125,6 +128,20 @@ describe("store threads", () => {
     expect(getSetting("history_sync_pending")).toBe("[]");
     setSetting("nickname", "tester");
     expect(getSetting("nickname")).toBe("tester");
+  });
+
+  it("clears the session for account reset without touching history", () => {
+    const peer = `reset-${UID}`;
+    insertIncomingMessage(peer, `rm-${UID}`, "old words", 1000);
+    saveSessionUser(`u-${UID}`, "s3cret");
+    expect(getSessionUser()?.user_id).toBe(`u-${UID}`);
+    // Re-saving the same id updates in place (reclaim with a fresh secret).
+    saveSessionUser(`u-${UID}`, "s3cret-v2");
+    expect(getSessionUser()?.secret).toBe("s3cret-v2");
+    clearSession();
+    expect(getSessionUser()).toBeUndefined();
+    // History survives the reset.
+    expect(getUnreadCounts()[peer]).toBe(1);
   });
 });
 

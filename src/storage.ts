@@ -79,6 +79,19 @@ export function loadReclaimToken(dataDir: string): string | null {
 }
 
 /**
+ * Delete the stored recovery token (account reset). The token belongs to the
+ * OLD id: keeping it would let a later server wipe silently reclaim the
+ * abandoned account instead of staying on the new one. Never throws.
+ */
+export function deleteReclaimToken(dataDir: string): void {
+  try {
+    fs.rmSync(reclaimPathFor(dataDir), { force: true });
+  } catch {
+    // Best effort.
+  }
+}
+
+/**
  * Ensure the data dir exists and migrate a legacy v0 DB once (copy, don't move).
  * Returns the resolved data dir.
  */
