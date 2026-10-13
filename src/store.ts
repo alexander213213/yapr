@@ -8,8 +8,12 @@ const insertIncomingMessageStmt = db.prepare(`
 `);
 
 const insertUserStmt = db.prepare(`
-    INSERT INTO session (user_id, secret)
+    INSERT OR REPLACE INTO session (user_id, secret)
     VALUES (?, ?)
+`);
+
+const clearSessionStmt = db.prepare(`
+    DELETE FROM session
 `);
 
 const findUserByUserIdStmt = db.prepare(`
@@ -385,7 +389,20 @@ export function getSessionUser(): UserRow | undefined {
 }
 
 export function saveSessionUser(userId: string, secret: string): void {
+  // OR REPLACE: re-saving the same id (reclaim with a fresh secret, or a
+  // repeated registration) must update in place, never throw on the PK —
+  // a throw here is swallowed by the frame dispatcher and silently keeps
+  // the dead secret, breaking every later login.
   insertUserStmt.run(userId, secret);
+}
+
+/**
+ * Drop all session rows (account reset). Messages, contacts, groups and the
+ * device identity key are intentionally kept: the next connect registers a
+ * fresh id while old history stays readable.
+ */
+export function clearSession(): void {
+  clearSessionStmt.run();
 }
 
 export function findSessionUser(userId: string): UserRow | undefined {

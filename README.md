@@ -83,13 +83,16 @@ Keys (shortcuts stand down while typing in any text field, except `Tab`):
   `Esc` clears the filter, then goes back.
 - Contact form: `Tab` cycles fields, `Enter` submits, `Esc` cancels.
 - Settings (`s`): `↑/↓` move, `Enter` toggles/switches/edits, `Esc` goes back. Theme
-  opens a picker: `↑/↓` preview, `Enter` applies, `Esc` cancels.
+  opens a picker: `↑/↓` preview, `Enter` applies, `Esc` cancels. Reset account
+  (bottom row) registers a brand-new ID after typing `I Understand` exactly —
+  history, contacts and identity key are kept; re-share the ID afterwards.
 - Group create (`g`): name first (`Enter` continues, `Esc` cancels), then members
-  (`Enter` adds, `Tab` creates, `Esc` back).
+  (`Enter` adds, `Ctrl+A` adds a raw ID, `Tab` creates, `Esc` back).
 - Group members/details views: `a` add (admin), `d` remove with `y` to confirm
   (admin), `Enter` edits a nickname in the nicks view, `Esc` goes back.
-- History-share prompt: `y` shares the last 20 messages re-encrypted for the
-  requester, `n`/`Esc` declines; other keys are ignored.
+- History for newcomers arrives automatically and silently (no prompt): the
+  oldest online member's client shares the missing window; a quiet line notes
+  what landed.
 - First run registers you automatically (identity key created locally) and
   identifies on every later start. Your numeric ID is in the header — share it
   so people can add you.
