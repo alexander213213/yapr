@@ -10,14 +10,12 @@ import ThemePickerModal from "./themePickerModal.js";
 import GroupCreateModal from "./groupCreateModal.js";
 import GroupMembersModal from "./groupMembersModal.js";
 import GroupNicksModal from "./groupNicksModal.js";
-import HistoryApproveModal from "./historyApproveModal.js";
 import DetailsPane from "./detailsPane.js";
 import ChatInput from "./inputBox.js";
 import { getTheme } from "./themes.js";
 import { isBlocked, isEditingText } from "./editMode.js";
 import { socketBus } from "./eventStore.js";
-import { findUserStmt, groupIdFromThreadKey, groupThreadKey, openChat } from "./store.js";
-import type { HistoryRequestFrame } from "./protocol.js";
+import { findUserStmt, getGroupCache, groupIdFromThreadKey, groupThreadKey, openChat } from "./store.js";
 
 
 
@@ -39,10 +37,18 @@ export default memo(function App() {
     const [mode, setMode] = useState<"add" | "edit">("add")
     const [online, setOnline] = useState(false)
     const [lastError, setLastError] = useState<string | undefined>()
+    // Persistent account-recovery notice: held until the next successful
+    // identify clears it (unlike the auto-clearing error toast above).
+    const [reclaimNotice, setReclaimNotice] = useState<string | undefined>()
+    // Reconnect visibility: latest retry reason, held while offline so a dead
+    // server never looks like a hang. Cleared on any successful connection.
+    const [connectNotice, setConnectNotice] = useState<string | undefined>()
     const [view, setView] = useState<"chat" | "contacts" | "settings" | "themePicker" | "createGroup" | "members" | "nicks">("chat")
     const [modalReturnView, setModalReturnView] = useState<"chat" | "contacts">("chat")
     const [detailsOpen, setDetailsOpen] = useState(false)
-    const [historyAsk, setHistoryAsk] = useState<{ groupId: string; requester: string } | undefined>()
+    // Quiet backfill notice: one transient line per completed round that
+    // actually landed rows (auto-clears like the error toast below).
+    const [syncNotice, setSyncNotice] = useState<string | undefined>()
     const theme = getTheme();
     const availableHeight = size.rows - 1 - 3
 
@@ -54,25 +60,42 @@ export default memo(function App() {
     useEffect(() => {
         const onIdentified = () => {
             setUser(findUserStmt.get() as UserRow | undefined)
+            setReclaimNotice(undefined)
         }
         const onConnection = (isOnline: boolean) => {
             setOnline(isOnline)
+            if (isOnline) setConnectNotice(undefined)
         }
         const onServerError = (msg: { code: string, message: string }) => {
             setLastError(`${msg.code}: ${msg.message}`)
         }
+        const onReclaimStatus = (msg: { ok: boolean, message: string }) => {
+            if (msg.ok) {
+                setReclaimNotice(undefined)
+            } else {
+                setReclaimNotice(msg.message)
+            }
+        }
+        const onConnectionNotice = (msg: { attempt: number, reason: string, delayMs: number }) => {
+            setConnectNotice(`retrying connection (#${msg.attempt}): ${msg.reason}`)
+        }
         socketBus.on("identified", onIdentified)
         socketBus.on("connection", onConnection)
         socketBus.on("server_error", onServerError)
-        const onHistoryRequest = (msg: HistoryRequestFrame) => {
-            setHistoryAsk({ groupId: msg.groupId, requester: msg.requester })
+        socketBus.on("reclaim_status", onReclaimStatus)
+        socketBus.on("connection_notice", onConnectionNotice)
+        const onHistorySync = (msg: { groupId: string, count: number }) => {
+            const name = getGroupCache(msg.groupId)?.name ?? "group";
+            setSyncNotice(`Loaded ${msg.count} older messages in ${name}`)
         }
-        socketBus.on("history_request", onHistoryRequest)
+        socketBus.on("history_sync", onHistorySync)
         return () => {
             socketBus.off("identified", onIdentified)
             socketBus.off("connection", onConnection)
             socketBus.off("server_error", onServerError)
-            socketBus.off("history_request", onHistoryRequest)
+            socketBus.off("reclaim_status", onReclaimStatus)
+            socketBus.off("connection_notice", onConnectionNotice)
+            socketBus.off("history_sync", onHistorySync)
         }
     }, [])
 
@@ -81,6 +104,12 @@ export default memo(function App() {
         const timer = setTimeout(() => setLastError(undefined), 5000)
         return () => clearTimeout(timer)
     }, [lastError])
+
+    useEffect(() => {
+        if (!syncNotice) return
+        const timer = setTimeout(() => setSyncNotice(undefined), 5000)
+        return () => clearTimeout(timer)
+    }, [syncNotice])
 
     useEffect(() => {
         const onResize = () => {
@@ -96,7 +125,7 @@ export default memo(function App() {
     
 
     useInput((input, key) => {
-        if (view !== "chat" || showContactModal || historyAsk) return
+        if (view !== "chat" || showContactModal) return
         // Letter shortcuts stand down while a text field is edited anywhere
         // or a modal owns the screen (Ink broadcasts to every handler).
         // Tab intentionally keeps working so composer focus-cycling is unaffected.
@@ -207,6 +236,8 @@ export default memo(function App() {
                     <Box width={size.cols} height={size.rows} alignItems="center" flexDirection="column">
                         <Text bold color={theme.roles.accent}>Yapr | {user ? user.user_id : ""} {online ? "●" : "○"}</Text>
                         {lastError ? <Text color={theme.roles.error}>{lastError}</Text> : null}
+                        {reclaimNotice ? <Text color={theme.roles.error}>{reclaimNotice}</Text> : null}
+                        {connectNotice && !online ? <Text dimColor>{connectNotice}</Text> : null}
                         <Box width={"100%"} flexGrow={1} alignItems="stretch" justifyContent="center" overflow="hidden">
                             <Sidebar focused={focused === "sidebar"} openPeerId={contactInfo?.peerId} setContactInfo={setContactInfo} onOpenBrowser={() => setView("contacts")}></Sidebar>
                             <MessagesBox focused={focused === "main"} contactInfo={contactInfo} availableHeight={availableHeight}/>
@@ -225,14 +256,7 @@ export default memo(function App() {
                             ) : null}
                         </Box>
                         <ChatInput focused={focused === "textbox"} onSubmit={handleTextSubmit} />
-                        {historyAsk && !showContactModal ? (
-                            <HistoryApproveModal
-                                groupId={historyAsk.groupId}
-                                requester={historyAsk.requester}
-                                armed={focused !== "textbox"}
-                                onClose={() => setHistoryAsk(undefined)}
-                            />
-                        ) : null}
+                        {syncNotice ? <Text dimColor>{syncNotice}</Text> : null}
                     </Box>
                 )
             }

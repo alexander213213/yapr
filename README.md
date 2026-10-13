@@ -15,10 +15,11 @@ envelopes it cannot read and holds them while you are offline.
 - **Terminal UI** — sidebar chats with unread badges, chat bubbles, scrollback,
   contacts browser, group threads with sender names and seen-by ticks, details pane
   (`i`), online (`●`) / offline (`○`) indicator, server errors as transient toasts.
-  Reconnects with backoff and keeps retrying.
+  Reconnects with backoff and keeps retrying, always showing the latest retry
+  reason under the header so a dead server never looks like a hang.
 - **Group chats** — creator-admin groups up to 50, pairwise E2EE per member, offline
   replay, per-member read tracking, nicknames (advertised or local-only), and
-  member-approved history sharing for newcomers.
+  automatic silent history backfill for newcomers.
 - **Durable local data** — SQLite in your OS data dir (survives npm updates) plus a
   device identity key. Automatic schema migrations.
 
@@ -124,16 +125,21 @@ aliases as unverified — rename anyone you need to trust.
 
 ## Group chats
 
-Create with `g`: name it, pick members (rapid `Enter`-to-add, type to filter, `Tab`
-done with the selection). Each message is sealed separately per member — the server
+Create with `g`: name it, pick members (rapid `Enter`-to-add, type to filter,
+`Ctrl+A` adds a raw user ID without needing them as a contact, `Tab` creates
+with the selection). Each message is sealed separately per member — the server
 only routes opaque blobs. The creator admins: adding/removing members, renaming.
 Leaving passes admin to the longest-tenured member; the last one out dissolves it.
 
 - **Details (`i`)**: info, member list, nicknames, leave. Your own nickname row sets
   what you advertise to that group; other rows set local pet names (never sent).
-- **History for newcomers**: new members see only what arrives after joining. They can
-  ask (`request` goes to online members); you approve per request and your client
-  re-sends your recent thread, re-encrypted for them.
+- **History for newcomers**: automatic and silent. When you join a group with no
+  local history, your client asks for the missing window; the server relays to
+  the oldest online member, whose client re-sends those rows re-encrypted for
+  you with their original authors and timestamps. They file in place — no new
+  messages, no unread bump, one quiet `Loaded N older messages` line. Deep gaps
+  walk forward automatically (up to 100 rows per group). Both sides need the
+  update; older clients fall back to the previous manual behavior.
 - **Removed members** keep whatever is already on their device — like any messenger,
   leaving removes future messages, not the past.
 
@@ -152,11 +158,30 @@ Leaving passes admin to the longest-tenured member; the last one out dissolves i
 
 | Location | Contents |
 |---|---|
-| Linux `~/.local/share/yapr`, macOS `~/Library/Application Support/yapr`, Windows `%APPDATA%/yapr` (or `$YAPR_DATA_DIR`) | `yapr.db` (history, contacts, key cache), `identity.key` (device private key, `0600`) |
+| Linux `~/.local/share/yapr`, macOS `~/Library/Application Support/yapr`, Windows `%APPDATA%/yapr` (or `$YAPR_DATA_DIR`) | `yapr.db` (history, contacts, key cache), `identity.key` (device private key, `0600`), `reclaim.token` (server-sealed account-recovery token, `0600`) |
 
 `identity.key` is the crown jewel: anyone holding it can read your incoming history.
 Back it up encrypted, never share it. Deleting the data dir logs you out and orphans
 readable history (re-registering creates a new account).
+
+## Account recovery
+
+If the server loses its database, you don't fork to a new account: the client
+silently reclaims your previous user id using `reclaim.token`, then logs in
+normally — contacts and history on other devices resolve again because ids
+anchor both. No prompts, no manual steps.
+
+Rules worth knowing:
+
+- The token is password-equivalent: whoever holds it can claim your id on a
+  fresh server. Back it up encrypted, alongside `identity.key`.
+- Recovery only works when the id is absent server-side. It never resets a
+  live account, and the client never auto-registers a new id while a token
+  exists — a failed recovery shows a persistent `account recovery failed …
+  contact operator` line instead of silently forking your identity.
+- Group memberships are not restored (a stale token must not re-admit a
+  removed member); ask a group admin to re-add you. Messages in flight when
+  the data was lost stay lost.
 
 ## Scripts
 

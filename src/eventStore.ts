@@ -2,7 +2,6 @@ import { EventEmitter } from "node:events";
 import type { MessageRow } from "./types.js";
 import type {
   ErrorFrame,
-  HistoryRequestFrame,
   ReadReceiptFrame,
   ServerAckFrame,
 } from "./protocol.js";
@@ -23,12 +22,16 @@ export type BusEvents = {
   identified: [];
   /** Transport state for the header. */
   connection: [online: boolean];
+  /** Reconnect scheduled (surfaced persistently until a connection succeeds). */
+  connection_notice: [msg: { attempt: number; reason: string; delayMs: number }];
   /** Sender-side read notification (mark read). */
   read_receipt: [msg: ReadReceiptFrame];
   /** Group membership snapshot changed (refresh group UI). */
   groups_changed: [];
-  /** A member asks you to share group history (G3 UI approves). */
-  history_request: [msg: HistoryRequestFrame];
+  /** A backfill round landed (quiet thread refresh notice, not a toast). */
+  history_sync: [msg: { groupId: string; count: number }];
+  /** Silent account-recovery outcome (persistent status line, not a toast). */
+  reclaim_status: [msg: { ok: boolean; message: string }];
   /** Coded server error (log/toast; connection stays up). */
   server_error: [msg: ErrorFrame];
 };

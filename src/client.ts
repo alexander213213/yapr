@@ -12,21 +12,27 @@ import {
   parseServerFrame,
   pongFrame,
   readRequest,
+  reclaimRequest,
   registerRequest,
   removeMemberRequest,
   renameGroupRequest,
   requestHistoryRequest,
   sendGroupRequest,
   sendRequest,
+  shareHistoryDoneRequest,
   type GroupCreatedFrame,
   type GroupsFrame,
+  type HistoryDoneFrame,
+  type HistoryRequestFrame,
   type IncomingFrame,
   type KeysFrame,
   type ServerAckFrame,
   type ServerFrame,
 } from "./protocol.js";
 import { loadOrCreateIdentity, openEnvelope, sealText, UNREADABLE_PLACEHOLDER } from "./crypto.js";
+import type { ForwardBlock } from "./crypto.js";
 import * as store from "./store.js";
+import { loadReclaimToken, resolveDataDir, saveReclaimToken } from "./storage.js";
 import { socketBus } from "./eventStore.js";
 import type { MessageRow } from "./types.js";
 
@@ -87,6 +93,30 @@ const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30_000;
 const KEYS_TIMEOUT_MS = 10_000;
 
+/** History backfill: rows per auto round, process cap per group, stall horizon. */
+const HISTORY_SYNC_ROUND_LIMIT = 20;
+const HISTORY_SYNC_MAX_TOTAL = 100;
+const HISTORY_SYNC_STALL_MS = 60_000;
+
+/** Groups with an unfinished backfill (survives restarts via settings). */
+function getPendingHistorySync(): Set<string> {
+  try {
+    const parsed: unknown = JSON.parse(store.getSetting("history_sync_pending"));
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((v): v is string => typeof v === "string"));
+  } catch {
+    return new Set();
+  }
+}
+
+function setPendingHistorySync(ids: Set<string>): void {
+  try {
+    store.setSetting("history_sync_pending", JSON.stringify([...ids]));
+  } catch {
+    // Best effort: worst case a restart mid-sync stalls one gap window.
+  }
+}
+
 function tlsOptions(): tls.ConnectionOptions {
   return trust.options;
 }
@@ -106,7 +136,27 @@ class YaprClient {
   private keysChain: Promise<void> = Promise.resolve();
   private keysWaiter: ((keys: Record<string, string>) => void) | null = null;
   private groupsWaiter: ((groups: GroupsFrame) => void) | null = null;
-  private groupCreatedWaiter: ((created: GroupCreatedFrame) => void) | null = null;
+  // Group creation resolves on group_created but must ALSO reject on error
+  // frames: without this, a server rejection (rate limit, unknown member)
+  // leaves the caller hanging until timeout with the error toast hidden
+  // behind the fullscreen modal.
+  private groupCreatedWaiter: {
+    resolve: (created: GroupCreatedFrame) => void;
+    reject: (err: Error) => void;
+  } | null = null;
+  // Silent account recovery (see reclaim flow below). All three reset per
+  // connection: each reconnect cycle gets exactly one reclaim attempt.
+  private identifyPendingUserId: string | null = null;
+  private reclaimAttempted = false;
+  private reclaimInFlight = false;
+  private pendingReclaimCreds: { userId: string; secret: string } | null = null;
+  // Automatic history backfill per group. Stateless across restarts by design:
+  // a repeat round after reboot simply re-resolves against current earliest
+  // rows, and dedup absorbs overlaps. `done` stops all future rounds.
+  private historySync = new Map<
+    string,
+    { total: number; done: boolean; inFlight: boolean; lastActivityAt: number }
+  >();
 
   get online(): boolean {
     return this.state === "online";
@@ -138,6 +188,10 @@ class YaprClient {
     if (this.stopped) return;
     this.setState("connecting");
     this.buffer = "";
+    this.reclaimAttempted = false;
+    this.reclaimInFlight = false;
+    this.pendingReclaimCreds = null;
+    this.identifyPendingUserId = null;
     let socket: tls.TLSSocket;
     try {
       socket = tls.connect({ host: HOST, port: PORT, ...tlsOptions() });
@@ -180,14 +234,18 @@ class YaprClient {
   private scheduleReconnect(reason: string): void {
     if (this.stopped || this.reconnectTimer) return;
     const delay = backoffDelay(this.reconnectAttempt);
+    const attempt = this.reconnectAttempt + 1;
     this.reconnectAttempt += 1;
+    // Visible, every time: a silent reconnect loop is indistinguishable from
+    // a hang (learned the hard way). The UI holds the latest notice until a
+    // connection succeeds.
+    socketBus.emit("connection_notice", { attempt, reason, delayMs: delay });
     // Intentionally ref'd: a messenger must stay alive across reconnects.
     // stop() clears the timer so the process can still exit cleanly.
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.connect();
     }, delay);
-    void reason;
   }
 
   private sendFrame(payload: object): boolean {
@@ -204,7 +262,43 @@ class YaprClient {
       this.sendFrame(registerRequest(publicKeyB64));
       return;
     }
+    this.identifyPendingUserId = user.user_id;
     this.sendFrame(identifyRequest(user.user_id, user.secret));
+  }
+
+  /**
+   * Silent account recovery after server data loss. Triggered once per
+   * connection when an identify is rejected while we hold a stored session
+   * and a recovery token: the token re-creates our id on the fresh server
+   * (fresh secret), then we identify normally. Never falls through to a
+   * fresh registration while a token exists — that would silently fork our
+   * identity and orphan every contact/history anchor.
+   */
+  private attemptReclaim(): void {
+    if (this.reclaimAttempted) return;
+    const user = store.getSessionUser();
+    if (!user) return;
+    let token: string | null = null;
+    try {
+      token = loadReclaimToken(resolveDataDir());
+    } catch {
+      token = null;
+    }
+    if (!token) return;
+    this.reclaimAttempted = true;
+    this.reclaimInFlight = true;
+    const { publicKeyB64 } = loadOrCreateIdentity();
+    this.sendFrame(reclaimRequest(token, publicKeyB64));
+  }
+
+  private persistReclaimToken(token: string | undefined): void {
+    if (!token) return;
+    try {
+      saveReclaimToken(resolveDataDir(), token);
+    } catch {
+      // Best effort: the server re-mints on every identify, so a missed
+      // write heals on the next login.
+    }
   }
 
   private onData(socket: tls.TLSSocket, chunk: string): void {
@@ -239,10 +333,32 @@ class YaprClient {
   private dispatch(frame: ServerFrame): void {
     switch (frame.type) {
       case "registered":
-        store.saveSessionUser(frame.userId, frame.secret);
-        this.sendFrame(identifyRequest(frame.userId, frame.secret));
+        this.persistReclaimToken(frame.reclaimToken);
+        if (this.reclaimInFlight) {
+          // Recovery reply: hold the fresh secret in memory and identify.
+          // The stored session is overwritten only after identify succeeds,
+          // so a failed identify never destroys our old credentials.
+          this.reclaimInFlight = false;
+          this.pendingReclaimCreds = { userId: frame.userId, secret: frame.secret };
+          this.identifyPendingUserId = frame.userId;
+          this.sendFrame(identifyRequest(frame.userId, frame.secret));
+        } else {
+          store.saveSessionUser(frame.userId, frame.secret);
+          this.identifyPendingUserId = frame.userId;
+          this.sendFrame(identifyRequest(frame.userId, frame.secret));
+        }
         break;
       case "identified":
+        this.persistReclaimToken(frame.reclaimToken);
+        this.identifyPendingUserId = null;
+        if (this.pendingReclaimCreds && this.pendingReclaimCreds.userId === frame.userId) {
+          store.saveSessionUser(this.pendingReclaimCreds.userId, this.pendingReclaimCreds.secret);
+          this.pendingReclaimCreds = null;
+          socketBus.emit("reclaim_status", {
+            ok: true,
+            message: `account ${frame.userId} recovered on ${HOST}:${PORT}`,
+          });
+        }
         socketBus.emit("identified");
         void this.syncAfterIdentify();
         break;
@@ -275,9 +391,41 @@ class YaprClient {
         void this.refreshGroups();
         break;
       case "history_request":
-        socketBus.emit("history_request", frame);
+        // No prompt, by design: the elected member shares the requested gap
+        // window immediately. Best effort — the requester's stall guard
+        // re-requests when a share never completes.
+        void this.autoShareHistory(frame).catch(() => {});
+        break;
+      case "history_done":
+        this.onHistoryDone(frame);
         break;
       case "error":
+        // A pending group creation must fail fast with the server's message
+        // (surfaced inline by the modal) instead of hanging to timeout.
+        // The toast still emits for every other consumer.
+        if (this.groupCreatedWaiter) {
+          this.rejectGroupCreated(new Error(`${frame.code}: ${frame.message}`));
+        }
+        if (this.reclaimInFlight) {
+          // Our recovery attempt was rejected (unknown id taken, recovery
+          // unavailable, rate-limited): surface persistently, stay on the old
+          // session, and never fork to a fresh registration.
+          this.reclaimInFlight = false;
+          this.pendingReclaimCreds = null;
+          socketBus.emit("reclaim_status", {
+            ok: false,
+            message: `account recovery failed (${frame.code}) — contact operator`,
+          });
+          break;
+        }
+        if (frame.code === "UNAUTH" && this.identifyPendingUserId && !this.reclaimAttempted) {
+          // Identify rejected while we hold a stored session: the server
+          // likely lost its database. Try silent recovery; the original
+          // UNAUTH stays silent unless recovery also fails.
+          this.identifyPendingUserId = null;
+          this.attemptReclaim();
+          if (this.reclaimInFlight) break;
+        }
         socketBus.emit("server_error", frame);
         break;
     }
@@ -298,7 +446,13 @@ class YaprClient {
   private resolveGroupCreated(frame: GroupCreatedFrame): void {
     const waiter = this.groupCreatedWaiter;
     this.groupCreatedWaiter = null;
-    if (waiter) waiter(frame);
+    if (waiter) waiter.resolve(frame);
+  }
+
+  private rejectGroupCreated(err: Error): void {
+    const waiter = this.groupCreatedWaiter;
+    this.groupCreatedWaiter = null;
+    if (waiter) waiter.reject(err);
   }
 
   /** After identify: refresh group membership first (flush may target groups). */
@@ -348,6 +502,10 @@ class YaprClient {
       }
     }
     socketBus.emit("groups_changed");
+    // Single choke point: every membership refresh (identify, invites,
+    // reconnects, group updates) re-evaluates backfill gaps. Guards inside
+    // make repeats no-ops.
+    this.maybeSyncGroups();
   }
 
   /** Fetch missing pubkeys (cached in store). Serialized; concurrent callers queue. */
@@ -405,14 +563,15 @@ class YaprClient {
     to: string,
     clientMessageId: string,
     text: string,
-    groupId?: string
+    groupId?: string,
+    fwd?: ForwardBlock
   ): Promise<void> {
     const user = store.getSessionUser();
     if (!user) throw new Error("not registered");
     if (!this.online) throw new Error("offline");
     const keys = await this.requestKeys([to]);
     const nick = store.nickForContext(groupId ?? null, user.user_id);
-    const envelope = sealText(this.peerKeyOrThrow(to, keys), user.user_id, to, text, nick);
+    const envelope = sealText(this.peerKeyOrThrow(to, keys), user.user_id, to, text, nick, fwd);
     if (!this.sendFrame(sendRequest(to, clientMessageId, envelope, groupId))) {
       throw new Error("offline");
     }
@@ -460,18 +619,187 @@ class YaprClient {
     }
   }
 
-  /** Share recent thread history with a member (explicit approval only — G3 UI). */
-  async shareHistory(groupId: string, toUserId: string, limit: number = 20): Promise<number> {
+  /**
+   * Share a gap window of thread history with a member: rows older than
+   * `before`, up to `limit`, each re-sealed to the requester with its
+   * ORIGINAL attribution inside the envelope (stable original message id for
+   * cross-sharer dedup). Always closes with a done notice — including zero —
+   * so the requester can tell "floor reached" from failure. Rows the sharer
+   * cannot decrypt are skipped.
+   */
+  async shareHistoryGap(
+    groupId: string,
+    toUserId: string,
+    before: number,
+    limit: number
+  ): Promise<number> {
     const user = store.getSessionUser();
     if (!user) throw new Error("not registered");
-    const rows = store.getGroupMessages(groupId).slice(-limit);
+    const rows = store.getGroupMessagesBefore(groupId, before, limit).reverse();
     let shared = 0;
     for (const row of rows) {
       if (row.text === UNREADABLE_PLACEHOLDER) continue;
-      await this.sendChatText(toUserId, randomUUID(), row.text, groupId);
+      if (!row.message_id) continue;
+      await this.sendHistoryRow(groupId, toUserId, row);
       shared += 1;
     }
+    this.sendFrame(shareHistoryDoneRequest(toUserId, groupId, shared));
     return shared;
+  }
+
+  private async sendHistoryRow(
+    groupId: string,
+    toUserId: string,
+    row: MessageRow
+  ): Promise<void> {
+    const user = store.getSessionUser();
+    if (!user) throw new Error("not registered");
+    if (!this.online) throw new Error("offline");
+    if (!row.message_id) throw new Error("history row without id");
+    const keys = await this.requestKeys([toUserId]);
+    const nick = store.nickForContext(groupId, user.user_id);
+    const envelope = sealText(
+      this.peerKeyOrThrow(toUserId, keys),
+      user.user_id,
+      toUserId,
+      row.text,
+      nick,
+      {
+        id: row.message_id,
+        from: row.peer_id,
+        nick: row.sender_nick ?? "",
+        sentAt: row.created_at,
+      }
+    );
+    if (!this.sendFrame(sendRequest(toUserId, randomUUID(), envelope, groupId))) {
+      throw new Error("offline");
+    }
+  }
+
+  /** Elected-sharer entry: share the requested gap window, no prompt. */
+  private async autoShareHistory(frame: HistoryRequestFrame): Promise<void> {
+    // Legacy bounds-absent requests (old manual flow) keep old semantics:
+    // the most recent window. New requests carry the true gap bounds.
+    const before = frame.before ?? Date.now();
+    const limit = frame.limit ?? HISTORY_SYNC_ROUND_LIMIT;
+    await this.shareHistoryGap(frame.groupId, frame.requester, before, limit);
+  }
+
+  /** Request one backfill round for a group. Completion arrives via history_done. */
+  requestHistoryGap(groupId: string): void {
+    if (!this.online) return;
+    const st = this.historySync.get(groupId) ?? {
+      total: 0,
+      done: false,
+      inFlight: false,
+      lastActivityAt: 0,
+    };
+    if (st.done || st.inFlight || st.total >= HISTORY_SYNC_MAX_TOTAL) return;
+    st.inFlight = true;
+    st.lastActivityAt = Date.now();
+    this.historySync.set(groupId, st);
+    const pending = getPendingHistorySync();
+    pending.add(groupId);
+    setPendingHistorySync(pending);
+    const earliest = store.getGroupEarliestCreatedAt(groupId);
+    this.sendFrame(
+      requestHistoryRequest(groupId, undefined, earliest ?? Date.now(), HISTORY_SYNC_ROUND_LIMIT)
+    );
+  }
+
+  /**
+   * Request one round per group that may hold a gap. Runs after every
+   * membership refresh (identify, invites, reconnects): fresh joins have
+   * empty threads, established members converge pre-join gaps they never
+   * fetched, and restarts simply re-resolve (dedup absorbs overlaps).
+   * Completed groups stay quiet for the process lifetime.
+   */
+  private maybeSyncGroups(): void {
+    if (!this.online) return;
+    const me = store.getSessionUser()?.user_id;
+    const now = Date.now();
+    // Resume groups left pending by a previous process (restart mid-sync),
+    // and drop entries for groups we no longer belong to (they can never
+    // complete).
+    const cachedIds = new Set(store.listGroupCache().map((g) => g.groupId));
+    const pending = getPendingHistorySync();
+    let pendingChanged = false;
+    for (const id of [...pending]) {
+      if (!cachedIds.has(id)) {
+        pending.delete(id);
+        pendingChanged = true;
+      } else if (!this.historySync.has(id)) {
+        this.historySync.set(id, { total: 0, done: false, inFlight: false, lastActivityAt: 0 });
+      }
+    }
+    if (pendingChanged) setPendingHistorySync(pending);
+    for (const g of store.listGroupCache()) {
+      const st = this.historySync.get(g.groupId);
+      if (st?.done) continue;
+      if (st?.inFlight && now - st.lastActivityAt < HISTORY_SYNC_STALL_MS) continue;
+      if (st && st.inFlight) {
+        // Stale round (sharer went quiet): allow exactly one more attempt.
+        // The next done or timeout re-arms from here.
+        st.inFlight = false;
+        st.lastActivityAt = now;
+      }
+      if ((st?.total ?? 0) >= HISTORY_SYNC_MAX_TOTAL) {
+        this.historySync.set(g.groupId, {
+          total: st?.total ?? 0,
+          done: true,
+          inFlight: false,
+          lastActivityAt: now,
+        });
+        continue;
+      }
+      const members = store.getGroupMembers(g.groupId);
+      const own = me ? members.find((m) => m.user_id === me) : undefined;
+      if (!own) continue; // Not (or no longer) a member: nothing to sync.
+      const oldest = members.reduce((m, x) => Math.min(m, x.joined_at), Infinity);
+      if (own.joined_at <= oldest) {
+        // Joined at genesis (creator/initials share one joinedAt): no older
+        // messages can exist. Settle quietly — this also keeps group creation
+        // itself from firing a pointless self-request.
+        this.historySync.set(g.groupId, {
+          total: st?.total ?? 0,
+          done: true,
+          inFlight: false,
+          lastActivityAt: now,
+        });
+        continue;
+      }
+      this.requestHistoryGap(g.groupId);
+    }
+  }
+
+  private onHistoryDone(frame: HistoryDoneFrame): void {
+    const now = Date.now();
+    const st = this.historySync.get(frame.groupId) ?? {
+      total: 0,
+      done: false,
+      inFlight: false,
+      lastActivityAt: 0,
+    };
+    st.inFlight = false;
+    st.lastActivityAt = now;
+    st.total += frame.count;
+    if (frame.count > 0) {
+      socketBus.emit("history_sync", { groupId: frame.groupId, count: frame.count });
+      // Silent thread refresh: rows arrived read-marked, so no badges bump.
+      socketBus.emit("chats_changed");
+    }
+    if (frame.count === HISTORY_SYNC_ROUND_LIMIT && st.total < HISTORY_SYNC_MAX_TOTAL) {
+      // Full batch: the gap runs deeper. The next round re-reads the current
+      // earliest row, so the window always tightens.
+      this.historySync.set(frame.groupId, st);
+      this.requestHistoryGap(frame.groupId);
+    } else {
+      st.done = true;
+      this.historySync.set(frame.groupId, st);
+      const pending = getPendingHistorySync();
+      pending.delete(frame.groupId);
+      setPendingHistorySync(pending);
+    }
   }
 
   async createGroup(name: string, memberIds: string[]): Promise<string> {
@@ -481,7 +809,7 @@ class YaprClient {
         reject(new Error("offline"));
         return;
       }
-      this.groupCreatedWaiter = resolve;
+      this.groupCreatedWaiter = { resolve, reject };
       const timer = setTimeout(() => {
         if (this.groupCreatedWaiter) {
           this.groupCreatedWaiter = null;
@@ -510,10 +838,6 @@ class YaprClient {
     this.sendFrame(renameGroupRequest(groupId, name));
   }
 
-  requestGroupHistory(groupId: string, toUserId: string): void {
-    this.sendFrame(requestHistoryRequest(groupId, toUserId));
-  }
-
   private async handleIncoming(frame: IncomingFrame): Promise<void> {
     const user = store.getSessionUser();
     let senderKey: string | null = store.getPeerKey(frame.from);
@@ -529,6 +853,15 @@ class YaprClient {
       ciphertext: frame.ciphertext,
       nonce: frame.nonce,
     });
+    if (opened.ok && opened.fwd && frame.groupId) {
+      // Backfilled history row: file silently with ORIGINAL attribution and
+      // timestamp, then ack like any other row (the server must drop its
+      // pending copy). No badges, no nick adoption, no receipts — the row
+      // arrives already read so later thread opens stay quiet too.
+      await this.fileBackfilledRow(frame.groupId, opened.fwd, opened.text);
+      this.sendFrame(ackRequest(frame.messageId));
+      return;
+    }
     const text = opened.ok ? opened.text : UNREADABLE_PLACEHOLDER;
     const nick = opened.ok ? opened.nick : "";
     const stored = store.insertIncomingMessage(
@@ -571,6 +904,38 @@ class YaprClient {
       socketBus.emit("incoming_message", msg);
     }
     this.sendFrame(ackRequest(frame.messageId));
+  }
+
+  /**
+   * File one backfilled row with its original sender, nick and timestamp.
+   * Overlapping shares from several approvers dedupe on the stable original
+   * message id. Rows for groups we no longer belong to are acked and dropped.
+   */
+  private async fileBackfilledRow(
+    groupId: string,
+    fwd: ForwardBlock,
+    text: string
+  ): Promise<void> {
+    if (!store.getGroupCache(groupId)) {
+      try {
+        await this.refreshGroups();
+      } catch {
+        // Best effort; the next snapshot heals it.
+      }
+      if (!store.getGroupCache(groupId)) return;
+    }
+    const stored = store.insertIncomingMessage(
+      fwd.from,
+      fwd.id,
+      text,
+      fwd.sentAt,
+      groupId,
+      fwd.nick
+    );
+    if (stored.inserted) {
+      store.markInboundMessageRead(fwd.id);
+    }
+    store.openChat(store.groupThreadKey(groupId));
   }
 
   /** Queue a read receipt for C3 thread views. */

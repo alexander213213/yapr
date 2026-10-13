@@ -17,6 +17,14 @@ export function identifyRequest(userId: string, secret: string): IdentifyRequest
   return { v: 2, type: "identify", userId, secret };
 }
 
+/** Silent account recovery after server data loss. The bearer token carries
+ *  only the user id; the server answers with a normal `registered` frame
+ *  (fresh secret), after which the client identifies normally. */
+export type ReclaimRequest = { v: 2; type: "reclaim"; token: string; pubKey: string };
+export function reclaimRequest(token: string, pubKey: string): ReclaimRequest {
+  return { v: 2, type: "reclaim", token, pubKey };
+}
+
 export type FetchKeysRequest = { v: 2; type: "fetch_keys"; userIds: string[] };
 export function fetchKeysRequest(userIds: string[]): FetchKeysRequest {
   return { v: 2, type: "fetch_keys", userIds };
@@ -129,9 +137,41 @@ export function sendGroupRequest(
   return { v: 2, type: "send_group", clientMessageId, groupId, envelopes, timestamp: Date.now() };
 }
 
-export type RequestHistoryRequest = { v: 2; type: "request_history"; groupId: string; to: string };
-export function requestHistoryRequest(groupId: string, to: string): RequestHistoryRequest {
-  return { v: 2, type: "request_history", groupId, to };
+export type RequestHistoryRequest = {
+  v: 2;
+  type: "request_history";
+  groupId: string;
+  to?: string;
+  before?: number;
+  limit?: number;
+};
+/**
+ * Gap-scoped history request. Absent `to` = automatic mode (server elects
+ * the oldest online member). `before` bounds the window to rows older than
+ * the requester's earliest local row; absent = legacy manual semantics.
+ */
+export function requestHistoryRequest(
+  groupId: string,
+  to?: string,
+  before?: number,
+  limit?: number
+): RequestHistoryRequest {
+  const req: RequestHistoryRequest = { v: 2, type: "request_history", groupId };
+  if (to !== undefined) req.to = to;
+  if (before !== undefined) req.before = before;
+  if (limit !== undefined) req.limit = limit;
+  return req;
+}
+
+export type ShareHistoryDoneRequest = {
+  v: 2;
+  type: "share_history_done";
+  to: string;
+  groupId: string;
+  count: number;
+};
+export function shareHistoryDoneRequest(to: string, groupId: string, count: number): ShareHistoryDoneRequest {
+  return { v: 2, type: "share_history_done", to, groupId, count };
 }
 
 // --- server -> client parsers (validated; unknown frames rejected) ---
@@ -141,10 +181,16 @@ const RegisteredFrame = z.object({
   type: z.literal("registered"),
   userId: userIdField,
   secret: z.string().min(1).max(256),
+  reclaimToken: z.string().min(1).max(512).optional(),
 });
 export type RegisteredFrame = z.infer<typeof RegisteredFrame>;
 
-const IdentifiedFrame = z.object({ v, type: z.literal("identified"), userId: userIdField });
+const IdentifiedFrame = z.object({
+  v,
+  type: z.literal("identified"),
+  userId: userIdField,
+  reclaimToken: z.string().min(1).max(512).optional(),
+});
 export type IdentifiedFrame = z.infer<typeof IdentifiedFrame>;
 
 const KeysFrame = z.object({
@@ -249,8 +295,19 @@ const HistoryRequestFrame = z.object({
   type: z.literal("history_request"),
   groupId: z.string().min(1).max(128),
   requester: userIdField,
+  before: z.number().int().nonnegative().optional(),
+  limit: z.number().int().min(1).max(50).optional(),
 });
 export type HistoryRequestFrame = z.infer<typeof HistoryRequestFrame>;
+
+const HistoryDoneFrame = z.object({
+  v,
+  type: z.literal("history_done"),
+  groupId: z.string().min(1).max(128),
+  count: z.number().int().nonnegative(),
+  from: userIdField,
+});
+export type HistoryDoneFrame = z.infer<typeof HistoryDoneFrame>;
 
 export const ServerFrame = z.discriminatedUnion("type", [
   RegisteredFrame,
@@ -266,6 +323,7 @@ export const ServerFrame = z.discriminatedUnion("type", [
   GroupCreatedFrame,
   GroupUpdatedFrame,
   HistoryRequestFrame,
+  HistoryDoneFrame,
 ]);
 export type ServerFrame = z.infer<typeof ServerFrame>;
 
