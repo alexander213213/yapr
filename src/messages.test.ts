@@ -13,7 +13,7 @@ process.env.YAPR_DATA_DIR = TEST_DIR;
 
 const { messagesToLines, markThreadAsRead } = await import("./messages.js");
 const { socketBus } = await import("./eventStore.js");
-const { insertIncomingMessage, getUnreadCounts } = await import("./store.js");
+const { insertIncomingMessage, getUnreadCounts, recordRead, setMemberNick } = await import("./store.js");
 
 function row(text: string): MessageRow {
   return {
@@ -109,6 +109,43 @@ describe("messagesToLines", () => {
     const joined = lines[0]!.segments.map((s) => s.text).join("");
     expect(joined.startsWith(" ")).toBe(false);
     expect(visible(lines[0]!)).toBe("hi");
+  });
+
+  it("resolves seen-by readers through nicknames, not bare ids", () => {
+    const gid = `g-seen-${Date.now()}`;
+    const reader = `reader-${Date.now()}`;
+    setMemberNick(gid, reader, "Cap");
+    const msg: MessageRow = {
+      id: 2,
+      peer_id: "peer-x",
+      direction: "out",
+      message_id: `m-seen-${Date.now()}`,
+      group_id: gid,
+      text: "yo",
+      created_at: 1700000000000,
+      status: "sent",
+    };
+    recordRead(msg.message_id!, reader);
+    const lines = messagesToLines(msg, 10, gid);
+    expect(lines[0]!.readers).toEqual(["Cap"]);
+  });
+
+  it("falls back to the id when a reader has no nick", () => {
+    const gid = `g-seen2-${Date.now()}`;
+    const reader = `stranger-${Date.now()}`;
+    const msg: MessageRow = {
+      id: 3,
+      peer_id: "peer-x",
+      direction: "out",
+      message_id: `m-seen2-${Date.now()}`,
+      group_id: gid,
+      text: "yo",
+      created_at: 1700000000000,
+      status: "sent",
+    };
+    recordRead(msg.message_id!, reader);
+    const lines = messagesToLines(msg, 10, gid);
+    expect(lines[0]!.readers).toEqual([reader]);
   });
 });
 

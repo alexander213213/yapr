@@ -90,7 +90,7 @@ export default memo(function GroupCreateModal({ onDone }: { onDone: (groupId: st
             Adding to <Text bold>{name || "(unnamed)"}</Text>
             {picked.length > 0 ? <Text dimColor> · {picked.length} picked</Text> : null}
           </Text>
-          <Box marginTop={1} height={12}>
+          <Box marginTop={1}>
             <ContactsBrowser
               pickMode
               excludePeerIds={[]}

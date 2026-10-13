@@ -136,7 +136,7 @@ export default memo(function SettingsForm({
           const active = i === row;
           const prefix = active ? "> " : "  ";
           if (r.kind === "toggle") {
-            const label = `${prefix}${r.label}: ${toggleLabel(values[r.key])}`;
+            const label = `${prefix}${r.label}: ${toggleLabel(values[r.key])} (Enter/Space flips)`;
             return active ? (
               <Text key={r.key} color={theme.roles.accent}>{label}</Text>
             ) : (

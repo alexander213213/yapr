@@ -1,5 +1,5 @@
 import { Box, Text, useInput } from "ink";
-import { memo, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { deleteContact, getAllContacts, openChat } from "./store.js";
 import { getTheme } from "./themes.js";
 import { socketBus } from "./eventStore.js";
@@ -64,7 +64,24 @@ export default memo(function ContactsBrowser({
   const [confirmDelete, setConfirmDelete] = useState<ContactsRow | undefined>();
   const theme = getTheme();
 
-  const refresh = () => setContacts(getAllContacts());
+  const refresh = () => {
+    setContacts(getAllContacts());
+  };
+
+  // Stay live: contacts change under us (adds, renames, auto-added unknown
+  // senders). Picker mode inherits this — membership snapshots refresh the
+  // same way via groups_changed. Highlight is clamped, never reset, so
+  // browsing survives background refreshes.
+  useEffect(() => {
+    socketBus.on("chats_changed", refresh);
+    socketBus.on("new_contact", refresh);
+    socketBus.on("groups_changed", refresh);
+    return () => {
+      socketBus.off("chats_changed", refresh);
+      socketBus.off("new_contact", refresh);
+      socketBus.off("groups_changed", refresh);
+    };
+  }, []);
 
   const visible = useMemo(() => {
     const q = filter.toLowerCase();
@@ -78,6 +95,12 @@ export default memo(function ContactsBrowser({
   }, [contacts, filter, pickMode, excludePeerIds, picked]);
 
   const current = visible[Math.min(highlight, Math.max(0, visible.length - 1))];
+
+  // Filtering or list changes can strand the highlight past the end: clamp
+  // it so Enter/d/e always land on the visibly highlighted row.
+  useEffect(() => {
+    setHighlight((h) => Math.min(h, Math.max(0, visible.length - 1)));
+  }, [visible]);
 
   const confirmPick = (peerId: string) => {
     const next = [...picked, peerId];
@@ -127,6 +150,8 @@ export default memo(function ContactsBrowser({
       return;
     }
     if (key.backspace || key.delete) {
+      // Nothing to erase outside filtering: leave the highlight alone.
+      if (!filter && !filtering) return;
       setFilter((f) => f.slice(0, -1));
       setHighlight(0);
       return;
