@@ -124,8 +124,9 @@ aliases as unverified — rename anyone you need to trust.
 
 ## Group chats
 
-Create with `g`: name it, pick members (rapid `Enter`-to-add, type to filter, `Tab`
-done with the selection). Each message is sealed separately per member — the server
+Create with `g`: name it, pick members (rapid `Enter`-to-add, type to filter,
+`Ctrl+A` adds a raw user ID without needing them as a contact, `Tab` creates
+with the selection). Each message is sealed separately per member — the server
 only routes opaque blobs. The creator admins: adding/removing members, renaming.
 Leaving passes admin to the longest-tenured member; the last one out dissolves it.
 
