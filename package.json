@@ -1,6 +1,6 @@
 {
   "name": "@sprunkzzz/yapr",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "bin": {
     "yapr": "./dist/index.js"
   },
