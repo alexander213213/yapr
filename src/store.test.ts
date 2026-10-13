@@ -19,11 +19,14 @@ const {
   deleteContact,
   findContact,
   getAllContacts,
+  getGroupEarliestCreatedAt,
+  getGroupMessagesBefore,
   getOpenChats,
   getSetting,
   getUnreadCounts,
   insertIncomingMessage,
   insertPendingMessage,
+  markInboundMessageRead,
   markThreadRead,
   openChat,
   setSetting,
@@ -119,7 +122,45 @@ describe("store threads", () => {
     expect(getSetting("share_nickname_dms")).toBe("0");
     expect(getSetting("theme")).toBe("moss");
     expect(getSetting("time_format")).toBe("12");
+    expect(getSetting("history_sync_pending")).toBe("[]");
     setSetting("nickname", "tester");
     expect(getSetting("nickname")).toBe("tester");
+  });
+});
+
+describe("history backfill queries", () => {
+  it("returns the gap window newest-first, excluding the boundary and other threads", () => {
+    const g = `gap-${UID}`;
+    insertIncomingMessage(`a-${UID}`, `gap-1-${UID}`, "oldest", 1000, g, "A");
+    insertIncomingMessage(`b-${UID}`, `gap-2-${UID}`, "middle", 2000, g, "B");
+    insertIncomingMessage(`a-${UID}`, `gap-3-${UID}`, "newest", 3000, g, "A");
+    insertIncomingMessage(`dm-${UID}`, `gap-dm-${UID}`, "dm", 1500);
+
+    const window = getGroupMessagesBefore(g, 3000, 10);
+    expect(window.map((r) => r.message_id)).toEqual([`gap-2-${UID}`, `gap-1-${UID}`]);
+    // Boundary is exclusive; limit binds.
+    expect(getGroupMessagesBefore(g, 2001, 10).map((r) => r.message_id)).toEqual([
+      `gap-2-${UID}`,
+      `gap-1-${UID}`,
+    ]);
+    expect(getGroupMessagesBefore(g, 9999, 1).map((r) => r.message_id)).toEqual([`gap-3-${UID}`]);
+    expect(getGroupMessagesBefore(`nope-${UID}`, 9999, 10)).toEqual([]);
+  });
+
+  it("reports the earliest local row, or null for empty threads", () => {
+    const g = `floor-${UID}`;
+    expect(getGroupEarliestCreatedAt(g)).toBeNull();
+    insertIncomingMessage(`a-${UID}`, `floor-1-${UID}`, "one", 5000, g);
+    insertIncomingMessage(`a-${UID}`, `floor-2-${UID}`, "two", 2000, g);
+    expect(getGroupEarliestCreatedAt(g)).toBe(2000);
+  });
+
+  it("marks single inbound rows read without touching siblings", () => {
+    const peer = `bk-${UID}`;
+    insertIncomingMessage(peer, `bk-1-${UID}`, "one", 1000);
+    insertIncomingMessage(peer, `bk-2-${UID}`, "two", 2000);
+    expect(getUnreadCounts()[peer]).toBe(2);
+    markInboundMessageRead(`bk-1-${UID}`);
+    expect(getUnreadCounts()[peer]).toBe(1);
   });
 });

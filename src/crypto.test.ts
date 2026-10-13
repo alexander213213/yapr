@@ -41,7 +41,7 @@ describe("seal/open (X25519 + AES-GCM)", () => {
     const ab = sealText(pubB, "alice", "bob", "hello bob");
     expect(ab.nonce).not.toBe("");
     useDir("b");
-    expect(openEnvelope(pubA, "bob", "alice", ab)).toEqual({ ok: true, text: "hello bob", nick: "" });
+    expect(openEnvelope(pubA, "bob", "alice", ab)).toEqual({ ok: true, text: "hello bob", nick: "", fwd: null });
 
     // Direction separation: opening an A->B envelope as B->A fails.
     expect(openEnvelope(pubB, "alice", "bob", ab)).toEqual({ ok: false });
@@ -49,7 +49,7 @@ describe("seal/open (X25519 + AES-GCM)", () => {
     useDir("b");
     const ba = sealText(pubA, "bob", "alice", "hi alice");
     useDir("a");
-    expect(openEnvelope(pubB, "alice", "bob", ba)).toEqual({ ok: true, text: "hi alice", nick: "" });
+    expect(openEnvelope(pubB, "alice", "bob", ba)).toEqual({ ok: true, text: "hi alice", nick: "", fwd: null });
   });
 
   it("carries the sender nickname inside the encrypted payload", () => {
@@ -61,6 +61,39 @@ describe("seal/open (X25519 + AES-GCM)", () => {
       ok: true,
       text: "hey",
       nick: "Al",
+      fwd: null,
+    });
+  });
+
+  it("round-trips a forward block for backfilled history", () => {
+    useDir("a");
+    const pubA = loadOrCreateIdentity().publicKeyB64;
+    useDir("b");
+    const pubB = loadOrCreateIdentity().publicKeyB64;
+    const fwd = { id: "m-orig-1", from: "alice", nick: "Al", sentAt: 1700000000000 };
+    useDir("a");
+    const env = sealText(pubB, "alice", "bob", "old hello", "", fwd);
+    useDir("b");
+    expect(openEnvelope(pubA, "bob", "alice", env)).toEqual({
+      ok: true,
+      text: "old hello",
+      nick: "",
+      fwd,
+    });
+  });
+
+  it("drops malformed forward blocks but keeps the text", () => {
+    useDir("a");
+    const pubA = loadOrCreateIdentity().publicKeyB64;
+    const badFwd = { id: "", from: "alice", nick: "", sentAt: -5 } as unknown as {
+      id: string; from: string; nick: string; sentAt: number;
+    };
+    const env = sealText(pubA, "alice", "alice", "still readable", "", badFwd);
+    expect(openEnvelope(pubA, "alice", "alice", env)).toEqual({
+      ok: true,
+      text: "still readable",
+      nick: "",
+      fwd: null,
     });
   });
 
@@ -94,7 +127,7 @@ describe("seal/open (X25519 + AES-GCM)", () => {
 
   it("decodes legacy empty-nonce envelopes as plaintext", () => {
     const legacy = { ciphertext: Buffer.from("hello legacy", "utf8").toString("base64"), nonce: "" };
-    expect(openEnvelope(null, "bob", "alice", legacy)).toEqual({ ok: true, text: "hello legacy", nick: "" });
+    expect(openEnvelope(null, "bob", "alice", legacy)).toEqual({ ok: true, text: "hello legacy", nick: "", fwd: null });
   });
 
   it("exports a placeholder constant", () => {

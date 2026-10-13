@@ -18,7 +18,7 @@ envelopes it cannot read and holds them while you are offline.
   Reconnects with backoff and keeps retrying.
 - **Group chats** — creator-admin groups up to 50, pairwise E2EE per member, offline
   replay, per-member read tracking, nicknames (advertised or local-only), and
-  member-approved history sharing for newcomers.
+  automatic silent history backfill for newcomers.
 - **Durable local data** — SQLite in your OS data dir (survives npm updates) plus a
   device identity key. Automatic schema migrations.
 
@@ -132,9 +132,13 @@ Leaving passes admin to the longest-tenured member; the last one out dissolves i
 
 - **Details (`i`)**: info, member list, nicknames, leave. Your own nickname row sets
   what you advertise to that group; other rows set local pet names (never sent).
-- **History for newcomers**: new members see only what arrives after joining. They can
-  ask (`request` goes to online members); you approve per request and your client
-  re-sends your recent thread, re-encrypted for them.
+- **History for newcomers**: automatic and silent. When you join a group with no
+  local history, your client asks for the missing window; the server relays to
+  the oldest online member, whose client re-sends those rows re-encrypted for
+  you with their original authors and timestamps. They file in place — no new
+  messages, no unread bump, one quiet `Loaded N older messages` line. Deep gaps
+  walk forward automatically (up to 100 rows per group). Both sides need the
+  update; older clients fall back to the previous manual behavior.
 - **Removed members** keep whatever is already on their device — like any messenger,
   leaving removes future messages, not the past.
 

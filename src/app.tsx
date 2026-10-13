@@ -10,14 +10,12 @@ import ThemePickerModal from "./themePickerModal.js";
 import GroupCreateModal from "./groupCreateModal.js";
 import GroupMembersModal from "./groupMembersModal.js";
 import GroupNicksModal from "./groupNicksModal.js";
-import HistoryApproveModal from "./historyApproveModal.js";
 import DetailsPane from "./detailsPane.js";
 import ChatInput from "./inputBox.js";
 import { getTheme } from "./themes.js";
 import { isBlocked, isEditingText } from "./editMode.js";
 import { socketBus } from "./eventStore.js";
-import { findUserStmt, groupIdFromThreadKey, groupThreadKey, openChat } from "./store.js";
-import type { HistoryRequestFrame } from "./protocol.js";
+import { findUserStmt, getGroupCache, groupIdFromThreadKey, groupThreadKey, openChat } from "./store.js";
 
 
 
@@ -45,7 +43,9 @@ export default memo(function App() {
     const [view, setView] = useState<"chat" | "contacts" | "settings" | "themePicker" | "createGroup" | "members" | "nicks">("chat")
     const [modalReturnView, setModalReturnView] = useState<"chat" | "contacts">("chat")
     const [detailsOpen, setDetailsOpen] = useState(false)
-    const [historyAsk, setHistoryAsk] = useState<{ groupId: string; requester: string } | undefined>()
+    // Quiet backfill notice: one transient line per completed round that
+    // actually landed rows (auto-clears like the error toast below).
+    const [syncNotice, setSyncNotice] = useState<string | undefined>()
     const theme = getTheme();
     const availableHeight = size.rows - 1 - 3
 
@@ -76,16 +76,17 @@ export default memo(function App() {
         socketBus.on("connection", onConnection)
         socketBus.on("server_error", onServerError)
         socketBus.on("reclaim_status", onReclaimStatus)
-        const onHistoryRequest = (msg: HistoryRequestFrame) => {
-            setHistoryAsk({ groupId: msg.groupId, requester: msg.requester })
+        const onHistorySync = (msg: { groupId: string, count: number }) => {
+            const name = getGroupCache(msg.groupId)?.name ?? "group";
+            setSyncNotice(`Loaded ${msg.count} older messages in ${name}`)
         }
-        socketBus.on("history_request", onHistoryRequest)
+        socketBus.on("history_sync", onHistorySync)
         return () => {
             socketBus.off("identified", onIdentified)
             socketBus.off("connection", onConnection)
             socketBus.off("server_error", onServerError)
             socketBus.off("reclaim_status", onReclaimStatus)
-            socketBus.off("history_request", onHistoryRequest)
+            socketBus.off("history_sync", onHistorySync)
         }
     }, [])
 
@@ -94,6 +95,12 @@ export default memo(function App() {
         const timer = setTimeout(() => setLastError(undefined), 5000)
         return () => clearTimeout(timer)
     }, [lastError])
+
+    useEffect(() => {
+        if (!syncNotice) return
+        const timer = setTimeout(() => setSyncNotice(undefined), 5000)
+        return () => clearTimeout(timer)
+    }, [syncNotice])
 
     useEffect(() => {
         const onResize = () => {
@@ -109,7 +116,7 @@ export default memo(function App() {
     
 
     useInput((input, key) => {
-        if (view !== "chat" || showContactModal || historyAsk) return
+        if (view !== "chat" || showContactModal) return
         // Letter shortcuts stand down while a text field is edited anywhere
         // or a modal owns the screen (Ink broadcasts to every handler).
         // Tab intentionally keeps working so composer focus-cycling is unaffected.
@@ -239,14 +246,7 @@ export default memo(function App() {
                             ) : null}
                         </Box>
                         <ChatInput focused={focused === "textbox"} onSubmit={handleTextSubmit} />
-                        {historyAsk && !showContactModal ? (
-                            <HistoryApproveModal
-                                groupId={historyAsk.groupId}
-                                requester={historyAsk.requester}
-                                armed={focused !== "textbox"}
-                                onClose={() => setHistoryAsk(undefined)}
-                            />
-                        ) : null}
+                        {syncNotice ? <Text dimColor>{syncNotice}</Text> : null}
                     </Box>
                 )
             }

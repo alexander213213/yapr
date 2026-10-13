@@ -2,7 +2,6 @@ import { EventEmitter } from "node:events";
 import type { MessageRow } from "./types.js";
 import type {
   ErrorFrame,
-  HistoryRequestFrame,
   ReadReceiptFrame,
   ServerAckFrame,
 } from "./protocol.js";
@@ -27,8 +26,8 @@ export type BusEvents = {
   read_receipt: [msg: ReadReceiptFrame];
   /** Group membership snapshot changed (refresh group UI). */
   groups_changed: [];
-  /** A member asks you to share group history (G3 UI approves). */
-  history_request: [msg: HistoryRequestFrame];
+  /** A backfill round landed (quiet thread refresh notice, not a toast). */
+  history_sync: [msg: { groupId: string; count: number }];
   /** Silent account-recovery outcome (persistent status line, not a toast). */
   reclaim_status: [msg: { ok: boolean; message: string }];
   /** Coded server error (log/toast; connection stays up). */

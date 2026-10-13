@@ -74,7 +74,6 @@ export default memo(function DetailsPane({
         { kind: "info", label: "Messages", value: `${count}` },
         { kind: "action", id: "members", label: "Members…" },
         { kind: "action", id: "nicks", label: "Nicknames…" },
-        { kind: "action", id: "history", label: "Ask for history" },
       ];
       if (admin) list.push({ kind: "action", id: "rename", label: "Rename group" });
       list.push({ kind: "action", id: "leave", label: "Leave group" });
@@ -146,13 +145,6 @@ export default memo(function DetailsPane({
         onOpenMembers(groupId);
       } else if (target.id === "nicks" && groupId) {
         onOpenNicks(groupId);
-      } else if (target.id === "history" && groupId) {
-        const own = getSessionUser()?.user_id;
-        for (const m of getGroupMembers(groupId)) {
-          if (m.user_id !== own) {
-            client.requestGroupHistory(groupId, m.user_id);
-          }
-        }
       } else if (target.id === "rename") {
         setDraft("");
         setEditing("rename");
