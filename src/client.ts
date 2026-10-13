@@ -234,14 +234,18 @@ class YaprClient {
   private scheduleReconnect(reason: string): void {
     if (this.stopped || this.reconnectTimer) return;
     const delay = backoffDelay(this.reconnectAttempt);
+    const attempt = this.reconnectAttempt + 1;
     this.reconnectAttempt += 1;
+    // Visible, every time: a silent reconnect loop is indistinguishable from
+    // a hang (learned the hard way). The UI holds the latest notice until a
+    // connection succeeds.
+    socketBus.emit("connection_notice", { attempt, reason, delayMs: delay });
     // Intentionally ref'd: a messenger must stay alive across reconnects.
     // stop() clears the timer so the process can still exit cleanly.
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.connect();
     }, delay);
-    void reason;
   }
 
   private sendFrame(payload: object): boolean {

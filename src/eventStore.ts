@@ -22,6 +22,8 @@ export type BusEvents = {
   identified: [];
   /** Transport state for the header. */
   connection: [online: boolean];
+  /** Reconnect scheduled (surfaced persistently until a connection succeeds). */
+  connection_notice: [msg: { attempt: number; reason: string; delayMs: number }];
   /** Sender-side read notification (mark read). */
   read_receipt: [msg: ReadReceiptFrame];
   /** Group membership snapshot changed (refresh group UI). */

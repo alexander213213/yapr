@@ -40,6 +40,9 @@ export default memo(function App() {
     // Persistent account-recovery notice: held until the next successful
     // identify clears it (unlike the auto-clearing error toast above).
     const [reclaimNotice, setReclaimNotice] = useState<string | undefined>()
+    // Reconnect visibility: latest retry reason, held while offline so a dead
+    // server never looks like a hang. Cleared on any successful connection.
+    const [connectNotice, setConnectNotice] = useState<string | undefined>()
     const [view, setView] = useState<"chat" | "contacts" | "settings" | "themePicker" | "createGroup" | "members" | "nicks">("chat")
     const [modalReturnView, setModalReturnView] = useState<"chat" | "contacts">("chat")
     const [detailsOpen, setDetailsOpen] = useState(false)
@@ -61,6 +64,7 @@ export default memo(function App() {
         }
         const onConnection = (isOnline: boolean) => {
             setOnline(isOnline)
+            if (isOnline) setConnectNotice(undefined)
         }
         const onServerError = (msg: { code: string, message: string }) => {
             setLastError(`${msg.code}: ${msg.message}`)
@@ -72,10 +76,14 @@ export default memo(function App() {
                 setReclaimNotice(msg.message)
             }
         }
+        const onConnectionNotice = (msg: { attempt: number, reason: string, delayMs: number }) => {
+            setConnectNotice(`retrying connection (#${msg.attempt}): ${msg.reason}`)
+        }
         socketBus.on("identified", onIdentified)
         socketBus.on("connection", onConnection)
         socketBus.on("server_error", onServerError)
         socketBus.on("reclaim_status", onReclaimStatus)
+        socketBus.on("connection_notice", onConnectionNotice)
         const onHistorySync = (msg: { groupId: string, count: number }) => {
             const name = getGroupCache(msg.groupId)?.name ?? "group";
             setSyncNotice(`Loaded ${msg.count} older messages in ${name}`)
@@ -86,6 +94,7 @@ export default memo(function App() {
             socketBus.off("connection", onConnection)
             socketBus.off("server_error", onServerError)
             socketBus.off("reclaim_status", onReclaimStatus)
+            socketBus.off("connection_notice", onConnectionNotice)
             socketBus.off("history_sync", onHistorySync)
         }
     }, [])
@@ -228,6 +237,7 @@ export default memo(function App() {
                         <Text bold color={theme.roles.accent}>Yapr | {user ? user.user_id : ""} {online ? "●" : "○"}</Text>
                         {lastError ? <Text color={theme.roles.error}>{lastError}</Text> : null}
                         {reclaimNotice ? <Text color={theme.roles.error}>{reclaimNotice}</Text> : null}
+                        {connectNotice && !online ? <Text dimColor>{connectNotice}</Text> : null}
                         <Box width={"100%"} flexGrow={1} alignItems="stretch" justifyContent="center" overflow="hidden">
                             <Sidebar focused={focused === "sidebar"} openPeerId={contactInfo?.peerId} setContactInfo={setContactInfo} onOpenBrowser={() => setView("contacts")}></Sidebar>
                             <MessagesBox focused={focused === "main"} contactInfo={contactInfo} availableHeight={availableHeight}/>

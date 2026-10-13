@@ -118,6 +118,41 @@ describe("groupCreatedWaiter", () => {
   });
 });
 
+describe("connection_notice", () => {
+  type Backdoor = {
+    stopped: boolean;
+    reconnectAttempt: number;
+    reconnectTimer: unknown;
+    scheduleReconnect: (reason: string) => void;
+  };
+  const backdoor = () => client as unknown as Backdoor;
+
+  it("emits attempt/reason/delay on every scheduled reconnect", () => {
+    const b = backdoor();
+    const prev = { stopped: b.stopped, attempt: b.reconnectAttempt, timer: b.reconnectTimer };
+    const notices: unknown[] = [];
+    const onNotice = (m: unknown) => { notices.push(m); };
+    socketBus.on("connection_notice", onNotice);
+    try {
+      b.stopped = false;
+      b.reconnectAttempt = 0;
+      b.scheduleReconnect("connection closed");
+      expect(notices).toHaveLength(1);
+      expect(notices[0]).toMatchObject({ attempt: 1, reason: "connection closed" });
+      expect((notices[0] as { delayMs: number }).delayMs).toBeGreaterThan(0);
+      // A pending retry suppresses duplicates (single timer by design).
+      b.scheduleReconnect("connection closed");
+      expect(notices).toHaveLength(1);
+    } finally {
+      socketBus.off("connection_notice", onNotice);
+      if (b.reconnectTimer) clearTimeout(b.reconnectTimer as ReturnType<typeof setTimeout>);
+      b.stopped = prev.stopped;
+      b.reconnectAttempt = prev.attempt;
+      b.reconnectTimer = prev.timer;
+    }
+  });
+});
+
 describe("history auto-loop", () => {
   type SyncState = { total: number; done: boolean; inFlight: boolean; lastActivityAt: number };
   type Backdoor = {
