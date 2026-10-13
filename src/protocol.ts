@@ -17,6 +17,14 @@ export function identifyRequest(userId: string, secret: string): IdentifyRequest
   return { v: 2, type: "identify", userId, secret };
 }
 
+/** Silent account recovery after server data loss. The bearer token carries
+ *  only the user id; the server answers with a normal `registered` frame
+ *  (fresh secret), after which the client identifies normally. */
+export type ReclaimRequest = { v: 2; type: "reclaim"; token: string; pubKey: string };
+export function reclaimRequest(token: string, pubKey: string): ReclaimRequest {
+  return { v: 2, type: "reclaim", token, pubKey };
+}
+
 export type FetchKeysRequest = { v: 2; type: "fetch_keys"; userIds: string[] };
 export function fetchKeysRequest(userIds: string[]): FetchKeysRequest {
   return { v: 2, type: "fetch_keys", userIds };
@@ -141,10 +149,16 @@ const RegisteredFrame = z.object({
   type: z.literal("registered"),
   userId: userIdField,
   secret: z.string().min(1).max(256),
+  reclaimToken: z.string().min(1).max(512).optional(),
 });
 export type RegisteredFrame = z.infer<typeof RegisteredFrame>;
 
-const IdentifiedFrame = z.object({ v, type: z.literal("identified"), userId: userIdField });
+const IdentifiedFrame = z.object({
+  v,
+  type: z.literal("identified"),
+  userId: userIdField,
+  reclaimToken: z.string().min(1).max(512).optional(),
+});
 export type IdentifiedFrame = z.infer<typeof IdentifiedFrame>;
 
 const KeysFrame = z.object({

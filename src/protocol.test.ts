@@ -11,6 +11,7 @@ import {
   parseServerFrame,
   pongFrame,
   readRequest,
+  reclaimRequest,
   registerRequest,
   removeMemberRequest,
   renameGroupRequest,
@@ -23,6 +24,15 @@ describe("request builders", () => {
   it("builds versioned register/identify frames", () => {
     expect(registerRequest("cHVia2V5")).toEqual({ v: 2, type: "register", pubKey: "cHVia2V5" });
     expect(identifyRequest("u", "s")).toEqual({ v: 2, type: "identify", userId: "u", secret: "s" });
+  });
+
+  it("builds a reclaim frame carrying the bearer token", () => {
+    expect(reclaimRequest("dG9rZW4=", "cHVia2V5")).toEqual({
+      v: 2,
+      type: "reclaim",
+      token: "dG9rZW4=",
+      pubKey: "cHVia2V5",
+    });
   });
 
   it("builds an opaque send frame", () => {
@@ -83,6 +93,15 @@ describe("parseServerFrame", () => {
     expect(parseServerFrame(`{"v":2,"type":"identified","userId":"u"}`)).toMatchObject({
       type: "identified",
     });
+  });
+
+  it("parses optional reclaim tokens on registered/identified (old servers omit them)", () => {
+    expect(
+      parseServerFrame(`{"v":2,"type":"registered","userId":"u","secret":"s","reclaimToken":"dG9rZW4="}`)
+    ).toMatchObject({ type: "registered", reclaimToken: "dG9rZW4=" });
+    expect(
+      parseServerFrame(`{"v":2,"type":"identified","userId":"u","reclaimToken":"dG9rZW4="}`)
+    ).toMatchObject({ type: "identified", reclaimToken: "dG9rZW4=" });
   });
 
   it("parses incoming/server_ack/pending_done/read_receipt/ping/error", () => {

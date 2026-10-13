@@ -12,6 +12,7 @@ import {
   parseServerFrame,
   pongFrame,
   readRequest,
+  reclaimRequest,
   registerRequest,
   removeMemberRequest,
   renameGroupRequest,
@@ -27,6 +28,7 @@ import {
 } from "./protocol.js";
 import { loadOrCreateIdentity, openEnvelope, sealText, UNREADABLE_PLACEHOLDER } from "./crypto.js";
 import * as store from "./store.js";
+import { loadReclaimToken, resolveDataDir, saveReclaimToken } from "./storage.js";
 import { socketBus } from "./eventStore.js";
 import type { MessageRow } from "./types.js";
 
@@ -106,7 +108,20 @@ class YaprClient {
   private keysChain: Promise<void> = Promise.resolve();
   private keysWaiter: ((keys: Record<string, string>) => void) | null = null;
   private groupsWaiter: ((groups: GroupsFrame) => void) | null = null;
-  private groupCreatedWaiter: ((created: GroupCreatedFrame) => void) | null = null;
+  // Group creation resolves on group_created but must ALSO reject on error
+  // frames: without this, a server rejection (rate limit, unknown member)
+  // leaves the caller hanging until timeout with the error toast hidden
+  // behind the fullscreen modal.
+  private groupCreatedWaiter: {
+    resolve: (created: GroupCreatedFrame) => void;
+    reject: (err: Error) => void;
+  } | null = null;
+  // Silent account recovery (see reclaim flow below). All three reset per
+  // connection: each reconnect cycle gets exactly one reclaim attempt.
+  private identifyPendingUserId: string | null = null;
+  private reclaimAttempted = false;
+  private reclaimInFlight = false;
+  private pendingReclaimCreds: { userId: string; secret: string } | null = null;
 
   get online(): boolean {
     return this.state === "online";
@@ -138,6 +153,10 @@ class YaprClient {
     if (this.stopped) return;
     this.setState("connecting");
     this.buffer = "";
+    this.reclaimAttempted = false;
+    this.reclaimInFlight = false;
+    this.pendingReclaimCreds = null;
+    this.identifyPendingUserId = null;
     let socket: tls.TLSSocket;
     try {
       socket = tls.connect({ host: HOST, port: PORT, ...tlsOptions() });
@@ -204,7 +223,43 @@ class YaprClient {
       this.sendFrame(registerRequest(publicKeyB64));
       return;
     }
+    this.identifyPendingUserId = user.user_id;
     this.sendFrame(identifyRequest(user.user_id, user.secret));
+  }
+
+  /**
+   * Silent account recovery after server data loss. Triggered once per
+   * connection when an identify is rejected while we hold a stored session
+   * and a recovery token: the token re-creates our id on the fresh server
+   * (fresh secret), then we identify normally. Never falls through to a
+   * fresh registration while a token exists — that would silently fork our
+   * identity and orphan every contact/history anchor.
+   */
+  private attemptReclaim(): void {
+    if (this.reclaimAttempted) return;
+    const user = store.getSessionUser();
+    if (!user) return;
+    let token: string | null = null;
+    try {
+      token = loadReclaimToken(resolveDataDir());
+    } catch {
+      token = null;
+    }
+    if (!token) return;
+    this.reclaimAttempted = true;
+    this.reclaimInFlight = true;
+    const { publicKeyB64 } = loadOrCreateIdentity();
+    this.sendFrame(reclaimRequest(token, publicKeyB64));
+  }
+
+  private persistReclaimToken(token: string | undefined): void {
+    if (!token) return;
+    try {
+      saveReclaimToken(resolveDataDir(), token);
+    } catch {
+      // Best effort: the server re-mints on every identify, so a missed
+      // write heals on the next login.
+    }
   }
 
   private onData(socket: tls.TLSSocket, chunk: string): void {
@@ -239,10 +294,32 @@ class YaprClient {
   private dispatch(frame: ServerFrame): void {
     switch (frame.type) {
       case "registered":
-        store.saveSessionUser(frame.userId, frame.secret);
-        this.sendFrame(identifyRequest(frame.userId, frame.secret));
+        this.persistReclaimToken(frame.reclaimToken);
+        if (this.reclaimInFlight) {
+          // Recovery reply: hold the fresh secret in memory and identify.
+          // The stored session is overwritten only after identify succeeds,
+          // so a failed identify never destroys our old credentials.
+          this.reclaimInFlight = false;
+          this.pendingReclaimCreds = { userId: frame.userId, secret: frame.secret };
+          this.identifyPendingUserId = frame.userId;
+          this.sendFrame(identifyRequest(frame.userId, frame.secret));
+        } else {
+          store.saveSessionUser(frame.userId, frame.secret);
+          this.identifyPendingUserId = frame.userId;
+          this.sendFrame(identifyRequest(frame.userId, frame.secret));
+        }
         break;
       case "identified":
+        this.persistReclaimToken(frame.reclaimToken);
+        this.identifyPendingUserId = null;
+        if (this.pendingReclaimCreds && this.pendingReclaimCreds.userId === frame.userId) {
+          store.saveSessionUser(this.pendingReclaimCreds.userId, this.pendingReclaimCreds.secret);
+          this.pendingReclaimCreds = null;
+          socketBus.emit("reclaim_status", {
+            ok: true,
+            message: `account ${frame.userId} recovered on ${HOST}:${PORT}`,
+          });
+        }
         socketBus.emit("identified");
         void this.syncAfterIdentify();
         break;
@@ -278,6 +355,32 @@ class YaprClient {
         socketBus.emit("history_request", frame);
         break;
       case "error":
+        // A pending group creation must fail fast with the server's message
+        // (surfaced inline by the modal) instead of hanging to timeout.
+        // The toast still emits for every other consumer.
+        if (this.groupCreatedWaiter) {
+          this.rejectGroupCreated(new Error(`${frame.code}: ${frame.message}`));
+        }
+        if (this.reclaimInFlight) {
+          // Our recovery attempt was rejected (unknown id taken, recovery
+          // unavailable, rate-limited): surface persistently, stay on the old
+          // session, and never fork to a fresh registration.
+          this.reclaimInFlight = false;
+          this.pendingReclaimCreds = null;
+          socketBus.emit("reclaim_status", {
+            ok: false,
+            message: `account recovery failed (${frame.code}) — contact operator`,
+          });
+          break;
+        }
+        if (frame.code === "UNAUTH" && this.identifyPendingUserId && !this.reclaimAttempted) {
+          // Identify rejected while we hold a stored session: the server
+          // likely lost its database. Try silent recovery; the original
+          // UNAUTH stays silent unless recovery also fails.
+          this.identifyPendingUserId = null;
+          this.attemptReclaim();
+          if (this.reclaimInFlight) break;
+        }
         socketBus.emit("server_error", frame);
         break;
     }
@@ -298,7 +401,13 @@ class YaprClient {
   private resolveGroupCreated(frame: GroupCreatedFrame): void {
     const waiter = this.groupCreatedWaiter;
     this.groupCreatedWaiter = null;
-    if (waiter) waiter(frame);
+    if (waiter) waiter.resolve(frame);
+  }
+
+  private rejectGroupCreated(err: Error): void {
+    const waiter = this.groupCreatedWaiter;
+    this.groupCreatedWaiter = null;
+    if (waiter) waiter.reject(err);
   }
 
   /** After identify: refresh group membership first (flush may target groups). */
@@ -481,7 +590,7 @@ class YaprClient {
         reject(new Error("offline"));
         return;
       }
-      this.groupCreatedWaiter = resolve;
+      this.groupCreatedWaiter = { resolve, reject };
       const timer = setTimeout(() => {
         if (this.groupCreatedWaiter) {
           this.groupCreatedWaiter = null;

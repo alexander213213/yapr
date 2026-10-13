@@ -1,6 +1,6 @@
 import { Box, Text, useInput } from "ink";
 import TextInput from "ink-text-input";
-import { memo, useState } from "react";
+import { memo, useRef, useState } from "react";
 import ContactsBrowser from "./contactsBrowser.js";
 import { getTheme } from "./themes.js";
 import { useEditMode } from "./editMode.js";
@@ -15,13 +15,19 @@ export default memo(function GroupCreateModal({ onDone }: { onDone: (groupId: st
   const [phase, setPhase] = useState<"name" | "pick">("name");
   const [picked, setPicked] = useState<string[]>([]);
   const [error, setError] = useState<string | undefined>();
+  // In-flight guard: repeat Tabs/Enters while the server round-trips must not
+  // stack duplicate creates (each would burn group-limiter budget). The ref is
+  // the guard (state lags across rapid keypresses); the state drives the hint.
+  const [creating, setCreating] = useState(false);
+  const creatingRef = useRef(false);
   useEditMode(phase === "name");
   const theme = getTheme();
 
   useInput((input, key) => {
     if (phase !== "name") {
       // Pick phase: Tab confirms (App ignores Tab outside the chat view).
-      if (key.tab) {
+      // Single-flight: ignored while a create is already in flight.
+      if (key.tab && !creatingRef.current) {
         void confirm();
       }
       return;
@@ -33,12 +39,17 @@ export default memo(function GroupCreateModal({ onDone }: { onDone: (groupId: st
 
   const confirm = async () => {
     const clean = name.trim();
-    if (!clean) return;
+    if (!clean || creatingRef.current) return;
+    creatingRef.current = true;
+    setCreating(true);
+    setError(undefined);
     try {
       const groupId = await client.createGroup(clean, picked);
       onDone(groupId);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      creatingRef.current = false;
+      setCreating(false);
     }
   };
 
@@ -68,7 +79,7 @@ export default memo(function GroupCreateModal({ onDone }: { onDone: (groupId: st
               onClose={() => setPhase("name")}
             />
           </Box>
-          <Text dimColor>Enter adds · Esc back · Tab creates with picked members</Text>
+          <Text dimColor>{creating ? "Creating…" : "Enter adds · Esc back · Tab creates with picked members"}</Text>
           {error ? <Text color={theme.roles.error}>{error}</Text> : null}
         </>
       )}
