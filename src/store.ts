@@ -275,6 +275,29 @@ export function displayNameFor(
   return findContact(senderId)?.alias ?? senderId;
 }
 
+/**
+ * Adopt an advertised DM nick as the contact alias when none is saved, so a
+ * newcomer's name shows up instead of their raw id. Renames always win
+ * afterwards; group mail never touches the global alias. Returns true when
+ * adopted. (Anyone can claim any nick — adoption only fills blanks.)
+ */
+export function adoptAdvertisedNick(peerId: string, nick: string): boolean {
+  const clean = nick.trim();
+  if (!clean) return false;
+  const current = findContact(peerId)?.alias?.trim() ?? "";
+  if (current) return false;
+  if (!findContact(peerId)) {
+    insertUnknownContactStmt.run(peerId);
+  }
+  try {
+    updateContactAliasStmt.run(clean, peerId);
+  } catch (err: unknown) {
+    if (!isUniqueViolation(err)) throw err;
+    return false; // Nick already taken by another alias: leave blank.
+  }
+  return true;
+}
+
 const findPendingOutboxStmt = db.prepare(`
     SELECT * FROM messages
     WHERE direction = 'out' AND status = 'pending'

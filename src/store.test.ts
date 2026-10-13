@@ -14,6 +14,7 @@ const UID = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 
 const {
   addNewContact,
+  adoptAdvertisedNick,
   closeChat,
   deleteContact,
   findContact,
@@ -89,6 +90,27 @@ describe("store threads", () => {
     expect(getOpenChats().some((c) => c.peer_id === id)).toBe(false);
     // Contact itself is untouched.
     expect(findContact(id)?.alias).toBe(`Chatter ${UID}`);
+  });
+
+  it("adopts advertised DM nicks only into blank aliases", () => {
+    const fresh = `newcomer-${UID}`;
+    expect(adoptAdvertisedNick(fresh, "  Captain  ")).toBe(true);
+    expect(findContact(fresh)?.alias).toBe("Captain");
+
+    // Renames win: adoption never overwrites.
+    expect(adoptAdvertisedNick(fresh, "Intruder")).toBe(false);
+    expect(findContact(fresh)?.alias).toBe("Captain");
+
+    // Empty/blank nicks adopt nothing (and create no row).
+    expect(adoptAdvertisedNick(`ghost-${UID}`, "")).toBe(false);
+    expect(adoptAdvertisedNick(`ghost-${UID}`, "   ")).toBe(false);
+    expect(findContact(`ghost-${UID}`)).toBeUndefined();
+
+    // A nick taken by another alias stays blank (UNIQUE guard).
+    expect(addNewContact(`holder-${UID}`, "Taken")).toEqual({ ok: true });
+    const clash = `clash-${UID}`;
+    expect(adoptAdvertisedNick(clash, "Taken")).toBe(false);
+    expect(findContact(clash)?.alias ?? null).toBe(null);
   });
 
   it("reads and writes settings with shipped defaults", () => {
