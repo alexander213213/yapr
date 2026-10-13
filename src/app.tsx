@@ -39,6 +39,9 @@ export default memo(function App() {
     const [mode, setMode] = useState<"add" | "edit">("add")
     const [online, setOnline] = useState(false)
     const [lastError, setLastError] = useState<string | undefined>()
+    // Persistent account-recovery notice: held until the next successful
+    // identify clears it (unlike the auto-clearing error toast above).
+    const [reclaimNotice, setReclaimNotice] = useState<string | undefined>()
     const [view, setView] = useState<"chat" | "contacts" | "settings" | "themePicker" | "createGroup" | "members" | "nicks">("chat")
     const [modalReturnView, setModalReturnView] = useState<"chat" | "contacts">("chat")
     const [detailsOpen, setDetailsOpen] = useState(false)
@@ -54,6 +57,7 @@ export default memo(function App() {
     useEffect(() => {
         const onIdentified = () => {
             setUser(findUserStmt.get() as UserRow | undefined)
+            setReclaimNotice(undefined)
         }
         const onConnection = (isOnline: boolean) => {
             setOnline(isOnline)
@@ -61,9 +65,17 @@ export default memo(function App() {
         const onServerError = (msg: { code: string, message: string }) => {
             setLastError(`${msg.code}: ${msg.message}`)
         }
+        const onReclaimStatus = (msg: { ok: boolean, message: string }) => {
+            if (msg.ok) {
+                setReclaimNotice(undefined)
+            } else {
+                setReclaimNotice(msg.message)
+            }
+        }
         socketBus.on("identified", onIdentified)
         socketBus.on("connection", onConnection)
         socketBus.on("server_error", onServerError)
+        socketBus.on("reclaim_status", onReclaimStatus)
         const onHistoryRequest = (msg: HistoryRequestFrame) => {
             setHistoryAsk({ groupId: msg.groupId, requester: msg.requester })
         }
@@ -72,6 +84,7 @@ export default memo(function App() {
             socketBus.off("identified", onIdentified)
             socketBus.off("connection", onConnection)
             socketBus.off("server_error", onServerError)
+            socketBus.off("reclaim_status", onReclaimStatus)
             socketBus.off("history_request", onHistoryRequest)
         }
     }, [])
@@ -207,6 +220,7 @@ export default memo(function App() {
                     <Box width={size.cols} height={size.rows} alignItems="center" flexDirection="column">
                         <Text bold color={theme.roles.accent}>Yapr | {user ? user.user_id : ""} {online ? "●" : "○"}</Text>
                         {lastError ? <Text color={theme.roles.error}>{lastError}</Text> : null}
+                        {reclaimNotice ? <Text color={theme.roles.error}>{reclaimNotice}</Text> : null}
                         <Box width={"100%"} flexGrow={1} alignItems="stretch" justifyContent="center" overflow="hidden">
                             <Sidebar focused={focused === "sidebar"} openPeerId={contactInfo?.peerId} setContactInfo={setContactInfo} onOpenBrowser={() => setView("contacts")}></Sidebar>
                             <MessagesBox focused={focused === "main"} contactInfo={contactInfo} availableHeight={availableHeight}/>

@@ -29,6 +29,8 @@ export type BusEvents = {
   groups_changed: [];
   /** A member asks you to share group history (G3 UI approves). */
   history_request: [msg: HistoryRequestFrame];
+  /** Silent account-recovery outcome (persistent status line, not a toast). */
+  reclaim_status: [msg: { ok: boolean; message: string }];
   /** Coded server error (log/toast; connection stays up). */
   server_error: [msg: ErrorFrame];
 };

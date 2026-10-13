@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 export const APP_NAME = "yapr";
 export const DB_FILENAME = "yapr.db";
 export const IDENTITY_FILENAME = "identity.key";
+export const RECLAIM_FILENAME = "reclaim.token";
 
 /** Resolve the persistent data dir. Never points inside the installed package. */
 export function resolveDataDir(): string {
@@ -44,6 +45,37 @@ export function dbPathFor(dataDir: string): string {
 
 export function identityPathFor(dataDir: string): string {
   return path.join(dataDir, IDENTITY_FILENAME);
+}
+
+export function reclaimPathFor(dataDir: string): string {
+  return path.join(dataDir, RECLAIM_FILENAME);
+}
+
+/**
+ * Server-sealed account-recovery token (bearer credential: whoever holds it
+ * can reclaim the account id on a fresh server). Stored 0600 like the
+ * identity key; back it up alongside it.
+ */
+export function saveReclaimToken(dataDir: string, token: string): void {
+  const file = reclaimPathFor(dataDir);
+  fs.writeFileSync(file, token.trim() + "\n", { mode: 0o600 });
+  try {
+    fs.chmodSync(file, 0o600);
+  } catch {
+    // Windows: best effort.
+  }
+}
+
+/** Load the stored recovery token, or null when absent/invalid. Never throws. */
+export function loadReclaimToken(dataDir: string): string | null {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(reclaimPathFor(dataDir), "utf8").trim();
+  } catch {
+    return null;
+  }
+  if (raw.length < 1 || raw.length > 512 || !/^[A-Za-z0-9+/=]+$/.test(raw)) return null;
+  return raw;
 }
 
 /**

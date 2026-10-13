@@ -152,11 +152,30 @@ Leaving passes admin to the longest-tenured member; the last one out dissolves i
 
 | Location | Contents |
 |---|---|
-| Linux `~/.local/share/yapr`, macOS `~/Library/Application Support/yapr`, Windows `%APPDATA%/yapr` (or `$YAPR_DATA_DIR`) | `yapr.db` (history, contacts, key cache), `identity.key` (device private key, `0600`) |
+| Linux `~/.local/share/yapr`, macOS `~/Library/Application Support/yapr`, Windows `%APPDATA%/yapr` (or `$YAPR_DATA_DIR`) | `yapr.db` (history, contacts, key cache), `identity.key` (device private key, `0600`), `reclaim.token` (server-sealed account-recovery token, `0600`) |
 
 `identity.key` is the crown jewel: anyone holding it can read your incoming history.
 Back it up encrypted, never share it. Deleting the data dir logs you out and orphans
 readable history (re-registering creates a new account).
+
+## Account recovery
+
+If the server loses its database, you don't fork to a new account: the client
+silently reclaims your previous user id using `reclaim.token`, then logs in
+normally — contacts and history on other devices resolve again because ids
+anchor both. No prompts, no manual steps.
+
+Rules worth knowing:
+
+- The token is password-equivalent: whoever holds it can claim your id on a
+  fresh server. Back it up encrypted, alongside `identity.key`.
+- Recovery only works when the id is absent server-side. It never resets a
+  live account, and the client never auto-registers a new id while a token
+  exists — a failed recovery shows a persistent `account recovery failed …
+  contact operator` line instead of silently forking your identity.
+- Group memberships are not restored (a stale token must not re-admit a
+  removed member); ask a group admin to re-add you. Messages in flight when
+  the data was lost stay lost.
 
 ## Scripts
 
