@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
 import { dbPathFor, ensureDataDir } from "./storage.js";
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 
 // Tests must isolate storage explicitly: static imports evaluate before any
 // test-body env assignment, so an unset dir under Vitest would silently open
@@ -215,6 +215,35 @@ if (version === 3) {
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_messages_group ON messages (group_id, created_at);
   `);
+  db.prepare(`UPDATE schema_version SET version = ?`).run(SCHEMA_VERSION);
+  version = SCHEMA_VERSION;
+}
+
+if (version === 4) {
+  // v4 -> v5: adopt advertised DM nicks as aliases for alias-less contacts,
+  // so threads that already hold sender_nick rows show names, not bare ids.
+  // Blank-only adoption; a nick already taken by another alias stays blank.
+  const candidates = db
+    .prepare(
+      `
+    SELECT c.peer_id AS peer, (
+      SELECT m.sender_nick FROM messages m
+      WHERE m.peer_id = c.peer_id
+        AND m.sender_nick IS NOT NULL AND TRIM(m.sender_nick) <> ''
+      ORDER BY m.created_at DESC, m.id DESC LIMIT 1
+    ) AS nick
+    FROM contacts c
+    WHERE c.alias IS NULL OR TRIM(c.alias) = ''
+  `
+    )
+    .all() as { peer: string; nick: string | null }[];
+  const aliasTakenStmt = db.prepare(`SELECT 1 FROM contacts WHERE alias = ?`);
+  const setAliasStmt = db.prepare(`UPDATE contacts SET alias = ? WHERE peer_id = ?`);
+  for (const { peer, nick } of candidates) {
+    if (!nick) continue;
+    if (aliasTakenStmt.get(nick.trim())) continue;
+    setAliasStmt.run(nick.trim(), peer);
+  }
   db.prepare(`UPDATE schema_version SET version = ?`).run(SCHEMA_VERSION);
   version = SCHEMA_VERSION;
 }

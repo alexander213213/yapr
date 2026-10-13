@@ -118,6 +118,9 @@ decrypted you see `[encrypted message — update yapr to read it]` instead of ga
 Your **nickname** and reveal toggles (Settings, `s`) travel inside your encrypted
 envelopes — never visible to the server. The group default applies everywhere unless
 you set a per-group override; DMs include it only if you enable that toggle.
+A DM newcomer's advertised name is adopted as their contact alias while none is
+saved (your renames always win). Anyone can claim any name, so treat adopted
+aliases as unverified — rename anyone you need to trust.
 
 ## Group chats
 
