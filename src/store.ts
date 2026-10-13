@@ -122,6 +122,22 @@ const findGroupMessagesStmt = db.prepare(`
     LIMIT 200
 `);
 
+const findGroupMessagesBeforeStmt = db.prepare(`
+    SELECT * FROM messages
+    WHERE group_id = ? AND created_at < ?
+    ORDER BY created_at DESC, id DESC
+    LIMIT ?
+`);
+
+const findGroupEarliestStmt = db.prepare(`
+    SELECT MIN(created_at) AS earliest FROM messages WHERE group_id = ?
+`);
+
+const markInboundMessageReadStmt = db.prepare(`
+    UPDATE messages SET status = 'read'
+    WHERE message_id = ? AND direction = 'in'
+`);
+
 const upsertGroupStmt = db.prepare(`
     INSERT INTO groups (group_id, name, updated_at)
     VALUES (?, ?, ?)
@@ -329,6 +345,9 @@ export const DEFAULT_SETTINGS = {
   share_nickname_dms: "0",
   theme: "moss",
   time_format: "12",
+  // Internal (never shown in Settings UI): group ids with an unfinished
+  // history backfill, so a restart mid-sync resumes instead of stalling.
+  history_sync_pending: "[]",
 } as const;
 export type SettingKey = keyof typeof DEFAULT_SETTINGS;
 
@@ -398,6 +417,28 @@ export function insertPendingMessage(
 
 export function getGroupMessages(groupId: string): MessageRow[] {
   return findGroupMessagesStmt.all(groupId) as MessageRow[];
+}
+
+/**
+ * Gap window for history backfill: the newest `limit` rows older than
+ * `before`, newest first. The sharer sends them oldest-first.
+ */
+export function getGroupMessagesBefore(groupId: string, before: number, limit: number): MessageRow[] {
+  return findGroupMessagesBeforeStmt.all(groupId, before, limit) as MessageRow[];
+}
+
+/** Earliest locally stored group row, or null when the thread is empty. */
+export function getGroupEarliestCreatedAt(groupId: string): number | null {
+  const row = findGroupEarliestStmt.get(groupId) as { earliest: number | null } | undefined;
+  return row?.earliest ?? null;
+}
+
+/**
+ * Mark one inbound row read. Silent backfill files rows this way so it never
+ * bumps unread badges nor triggers read receipts on later thread opens.
+ */
+export function markInboundMessageRead(messageId: string): void {
+  markInboundMessageReadStmt.run(messageId);
 }
 
 export function getPendingOutbox(limit: number = OUTBOX_BATCH_LIMIT): MessageRow[] {

@@ -99,32 +99,64 @@ function deriveMessageKey(
 const GCM_NONCE_LEN = 12;
 const GCM_TAG_LEN = 16;
 
-/** Inner payload version: `{ v: 1, nick, text }` as JSON. */
+/** Inner payload version: `{ v: 1, nick, text, fwd? }` as JSON. The optional
+ *  forward block carries original attribution for silently backfilled history.
+ *  `v` stays 1 on purpose: old readers ignore unknown keys and degrade to
+ *  today's behavior instead of showing garbage. */
 const PAYLOAD_VERSION = 1;
 
-export type OpenResult = { ok: true; text: string; nick: string } | { ok: false };
+/** Original attribution for a backfilled history row. */
+export type ForwardBlock = {
+  /** Original server message id (stable dedup key across sharers). */
+  id: string;
+  /** Original sender user id. */
+  from: string;
+  /** Original sender nickname at share time (may be ""). */
+  nick: string;
+  /** Original server timestamp. */
+  sentAt: number;
+};
 
-function encodePayload(nick: string, text: string): string {
-  return JSON.stringify({ v: PAYLOAD_VERSION, nick, text });
+export type OpenResult =
+  | { ok: true; text: string; nick: string; fwd: ForwardBlock | null }
+  | { ok: false };
+
+function encodePayload(nick: string, text: string, fwd?: ForwardBlock): string {
+  return JSON.stringify({ v: PAYLOAD_VERSION, nick, text, ...(fwd ? { fwd } : {}) });
 }
 
-/** Decode a payload, accepting both current `{v,nick,text}` and legacy raw text. */
-function decodePayload(plaintext: string): { text: string; nick: string } {
+function validForwardBlock(value: unknown): ForwardBlock | null {
+  if (typeof value !== "object" || value === null) return null;
+  const o = value as Record<string, unknown>;
+  if (
+    typeof o.id !== "string" || o.id.length < 1 || o.id.length > 128 ||
+    typeof o.from !== "string" || o.from.length < 1 || o.from.length > 64 ||
+    typeof o.nick !== "string" || o.nick.length > 64 ||
+    typeof o.sentAt !== "number" || !Number.isInteger(o.sentAt) || o.sentAt < 0
+  ) {
+    return null;
+  }
+  return { id: o.id, from: o.from, nick: o.nick, sentAt: o.sentAt };
+}
+
+/** Decode a payload, accepting both current `{v,nick,text,fwd?}` and legacy raw text. */
+function decodePayload(plaintext: string): { text: string; nick: string; fwd: ForwardBlock | null } {
   try {
     const parsed: unknown = JSON.parse(plaintext);
     if (typeof parsed === "object" && parsed !== null) {
-      const obj = parsed as { v?: unknown; nick?: unknown; text?: unknown };
+      const obj = parsed as { v?: unknown; nick?: unknown; text?: unknown; fwd?: unknown };
       if (obj.v === PAYLOAD_VERSION) {
         return {
           text: typeof obj.text === "string" ? obj.text : plaintext,
           nick: typeof obj.nick === "string" ? obj.nick : "",
+          fwd: validForwardBlock(obj.fwd),
         };
       }
     }
   } catch {
     // Not JSON: pre-nick raw-text envelope from an older client.
   }
-  return { text: plaintext, nick: "" };
+  return { text: plaintext, nick: "", fwd: null };
 }
 
 /**
@@ -137,7 +169,8 @@ export function sealText(
   senderId: string,
   recipientId: string,
   text: string,
-  nick: string = ""
+  nick: string = "",
+  fwd?: ForwardBlock
 ): Envelope {
   const shared = crypto.diffieHellman({
     privateKey: loadPrivateKey(),
@@ -146,7 +179,7 @@ export function sealText(
   const nonce = crypto.randomBytes(GCM_NONCE_LEN);
   const key = deriveMessageKey(shared, nonce, senderId, recipientId);
   const cipher = crypto.createCipheriv("aes-256-gcm", key, nonce);
-  const payload = encodePayload(nick, text);
+  const payload = encodePayload(nick, text, fwd);
   const ciphertext = Buffer.concat([cipher.update(payload, "utf8"), cipher.final()]);
   const sealed = Buffer.concat([ciphertext, cipher.getAuthTag()]);
   return { ciphertext: sealed.toString("base64"), nonce: nonce.toString("base64") };
@@ -159,6 +192,7 @@ function openLegacy(envelope: Envelope): OpenResult {
       ok: true,
       text: Buffer.from(envelope.ciphertext, "base64").toString("utf8"),
       nick: "",
+      fwd: null,
     };
   } catch {
     return { ok: false };
@@ -194,8 +228,8 @@ export function openEnvelope(
       decipher.update(sealed.subarray(0, sealed.length - GCM_TAG_LEN)),
       decipher.final(),
     ]).toString("utf8");
-    const { text, nick } = decodePayload(plaintext);
-    return { ok: true, text, nick };
+    const { text, nick, fwd } = decodePayload(plaintext);
+    return { ok: true, text, nick, fwd };
   } catch {
     return { ok: false };
   }

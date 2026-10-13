@@ -18,6 +18,7 @@ import {
   requestHistoryRequest,
   sendGroupRequest,
   sendRequest,
+  shareHistoryDoneRequest,
 } from "./protocol.js";
 
 describe("request builders", () => {
@@ -71,7 +72,20 @@ describe("request builders", () => {
     expect(leaveGroupRequest("g")).toEqual({ v: 2, type: "leave_group", groupId: "g" });
     expect(renameGroupRequest("g", "n")).toMatchObject({ type: "rename_group", name: "n" });
     expect(fetchGroupsRequest()).toEqual({ v: 2, type: "fetch_groups" });
-    expect(requestHistoryRequest("g", "1")).toMatchObject({ type: "request_history" });
+    expect(requestHistoryRequest("g", "1")).toMatchObject({ type: "request_history", to: "1" });
+    expect(requestHistoryRequest("g")).toEqual({ v: 2, type: "request_history", groupId: "g" });
+    expect(requestHistoryRequest("g", undefined, 1700000000000, 20)).toMatchObject({
+      type: "request_history",
+      before: 1700000000000,
+      limit: 20,
+    });
+    expect(shareHistoryDoneRequest("1", "g", 7)).toEqual({
+      v: 2,
+      type: "share_history_done",
+      to: "1",
+      groupId: "g",
+      count: 7,
+    });
     expect(
       sendGroupRequest("g", "c", [{ to: "1", ciphertext: "Yw==", nonce: "bg==" }])
     ).toMatchObject({ v: 2, type: "send_group", groupId: "g" });
@@ -150,6 +164,12 @@ describe("parseServerFrame", () => {
     expect(
       parseServerFrame(`{"v":2,"type":"history_request","groupId":"g","requester":"u"}`)
     ).toMatchObject({ type: "history_request" });
+    expect(
+      parseServerFrame(`{"v":2,"type":"history_request","groupId":"g","requester":"u","before":1700000000000,"limit":20}`)
+    ).toMatchObject({ type: "history_request", before: 1700000000000, limit: 20 });
+    expect(
+      parseServerFrame(`{"v":2,"type":"history_done","groupId":"g","count":7,"from":"u"}`)
+    ).toMatchObject({ type: "history_done", count: 7 });
     expect(
       parseServerFrame(
         `{"v":2,"type":"incoming","from":"a","messageId":"m","ciphertext":"Yy","nonce":"n","timestamp":1,"groupId":"g"}`

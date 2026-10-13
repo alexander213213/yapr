@@ -10,7 +10,6 @@ fs.rmSync(TEST_DIR, { recursive: true, force: true });
 process.env.YAPR_DATA_DIR = TEST_DIR;
 
 const { resolveBrowserKey } = await import("./contactsBrowser.js");
-const { resolveHistoryKey } = await import("./historyApproveModal.js");
 
 describe("resolveBrowserKey", () => {
   it("fires manage-mode actions only outside filter mode", () => {
@@ -41,15 +40,5 @@ describe("resolveBrowserKey", () => {
     const base = { pickMode: true, filtering: false, hasCurrent: true };
     expect(resolveBrowserKey({ ...base, input: "d", ctrl: true, meta: false })).toBe("ignore");
     expect(resolveBrowserKey({ ...base, input: "", ctrl: false, meta: false })).toBe("ignore");
-  });
-});
-
-describe("resolveHistoryKey", () => {
-  it("accepts only explicit y/n", () => {
-    expect(resolveHistoryKey("y")).toBe("approve");
-    expect(resolveHistoryKey("n")).toBe("dismiss");
-    expect(resolveHistoryKey("s")).toBe("ignore");
-    expect(resolveHistoryKey("q")).toBe("ignore");
-    expect(resolveHistoryKey("")).toBe("ignore");
   });
 });
