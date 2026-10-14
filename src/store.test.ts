@@ -18,11 +18,13 @@ const {
   clearSession,
   closeChat,
   deleteContact,
+  deletePoisonedHistory,
   displayNameFor,
   findContact,
   getAllContacts,
   getGroupEarliestCreatedAt,
   getGroupMessagesBefore,
+  getLatestAdvertisedNick,
   getOpenChats,
   getSessionUser,
   getSetting,
@@ -223,5 +225,30 @@ describe("shared nicknames", () => {
     // Tombstone falls back through.
     setSharedNick(g, "u1", null, 2000);
     expect(displayNameFor(g, "u1", "Adv")).toBe("Adv");
+  });
+
+  it("deletes only poisoned thread-key senders and reports their groups", () => {
+    const g = `pz-${UID}`;
+    const dmPeer = `pz-dm2-${UID}`;
+    insertIncomingMessage(`g:${g}`, `pz-bad-${UID}`, "poisoned", 1000, g);
+    insertIncomingMessage(`good-${UID}`, `pz-ok-${UID}`, "fine", 2000, g, "G");
+    insertIncomingMessage(dmPeer, `pz-dm-${UID}`, "dm", 1500);
+    expect(deletePoisonedHistory()).toEqual([g]);
+    // Legit rows survive (inbound DM, well-formed group row).
+    expect(getUnreadCounts()[`good-${UID}`]).toBe(1);
+    expect(getUnreadCounts()[dmPeer]).toBe(1);
+    expect(getUnreadCounts()[`g:${g}`] ?? 0).toBe(0);
+    // Idempotent second run.
+    expect(deletePoisonedHistory()).toEqual([]);
+  });
+
+  it("resolves the latest advertised nick per member, skipping blanks", () => {
+    const g = `ad-${UID}`;
+    const u = `au-${UID}`;
+    expect(getLatestAdvertisedNick(g, u)).toBeNull();
+    insertIncomingMessage(u, `ad-1-${UID}`, "one", 1000, g, "  ");
+    insertIncomingMessage(u, `ad-2-${UID}`, "two", 2000, g, "Old");
+    insertIncomingMessage(u, `ad-3-${UID}`, "three", 3000, g, "New");
+    expect(getLatestAdvertisedNick(g, u)).toBe("New");
   });
 });

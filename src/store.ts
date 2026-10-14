@@ -137,6 +137,13 @@ const findGroupEarliestStmt = db.prepare(`
     SELECT MIN(created_at) AS earliest FROM messages WHERE group_id = ?
 `);
 
+const findLatestAdvertisedNickStmt = db.prepare(`
+    SELECT sender_nick FROM messages
+    WHERE group_id = ? AND peer_id = ?
+      AND sender_nick IS NOT NULL AND TRIM(sender_nick) <> ''
+    ORDER BY created_at DESC, id DESC LIMIT 1
+`);
+
 const markInboundMessageReadStmt = db.prepare(`
     UPDATE messages SET status = 'read'
     WHERE message_id = ? AND direction = 'in'
@@ -519,11 +526,42 @@ export function getGroupEarliestCreatedAt(groupId: string): number | null {
 }
 
 /**
+ * Newest advertised nickname a member actually used in this group (their
+ * envelope nick on their latest message). Display fallback so member lists
+ * never look emptier than the chat itself. Null when never advertised.
+ */
+export function getLatestAdvertisedNick(groupId: string, userId: string): string | null {
+  const row = findLatestAdvertisedNickStmt.get(groupId, userId) as
+    | { sender_nick: string }
+    | undefined;
+  return row?.sender_nick ?? null;
+}
+
+/**
  * Mark one inbound row read. Silent backfill files rows this way so it never
  * bumps unread badges nor triggers read receipts on later thread opens.
  */
 export function markInboundMessageRead(messageId: string): void {
   markInboundMessageReadStmt.run(messageId);
+}
+
+/**
+ * One-time cleanup for pre-fix backfill rows filed with a thread key
+ * ("g:…") as the sender (sharers re-sealed their own outbound rows verbatim).
+ * Deletes them and returns the affected group ids so the caller can re-queue
+ * those gaps — the fixed sharers re-send with correct attribution and the
+ * stable original ids dedupe against anything already correct. Idempotent:
+ * later runs find nothing and no-op. Outbound thread-key rows are legitimate
+ * (pending outbox + sent history) and are never touched: direction filter.
+ */
+export function deletePoisonedHistory(): string[] {
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT group_id FROM messages WHERE direction = 'in' AND peer_id LIKE 'g:%'`
+    )
+    .all() as { group_id: string | null }[];
+  db.prepare(`DELETE FROM messages WHERE direction = 'in' AND peer_id LIKE 'g:%'`).run();
+  return [...new Set(rows.map((r) => r.group_id).filter((g): g is string => !!g))];
 }
 
 export function getPendingOutbox(limit: number = OUTBOX_BATCH_LIMIT): MessageRow[] {

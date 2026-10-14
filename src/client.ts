@@ -166,6 +166,9 @@ class YaprClient {
     string,
     { total: number; done: boolean; inFlight: boolean; lastActivityAt: number }
   >();
+  // Poisoned-history migration runs once per process (reconnects must not
+  // re-wipe; the delete is idempotent anyway, but re-queueing would spam).
+  private poisonMigrated = false;
 
   get online(): boolean {
     return this.state === "online";
@@ -477,7 +480,39 @@ class YaprClient {
     } catch {
       // Offline races resolve on reconnect; keep going.
     }
+    this.migratePoisonedHistoryOnce();
     await this.flushOutbox();
+  }
+
+  /**
+   * One-time cleanup for pre-fix backfill rows (thread key filed as sender).
+   * Deletes them and re-queues the affected gaps; the normal loop refires on
+   * the refresh below and fixed sharers re-send with correct attribution.
+   * Idempotent: later runs find nothing and skip silently.
+   */
+  private migratePoisonedHistoryOnce(): void {
+    if (this.poisonMigrated) return;
+    this.poisonMigrated = true;
+    let affected: string[];
+    try {
+      affected = store.deletePoisonedHistory();
+    } catch {
+      return;
+    }
+    if (affected.length === 0) return;
+    const pending = getPendingHistorySync();
+    let changed = false;
+    for (const id of affected) {
+      if (!pending.has(id)) {
+        pending.add(id);
+        changed = true;
+      }
+    }
+    if (changed) setPendingHistorySync(pending);
+    socketBus.emit("chats_changed");
+    // Re-evaluate immediately so re-queued gaps don't wait for the next
+    // unrelated refresh to refire.
+    this.maybeSyncGroups();
   }
 
   /** Pull the membership snapshot into the local cache. */
@@ -682,6 +717,11 @@ class YaprClient {
     if (!row.message_id) throw new Error("history row without id");
     const keys = await this.requestKeys([toUserId]);
     const nick = store.nickForContext(groupId, user.user_id);
+    // Outbound rows store the thread key ("g:…") as peer_id by convention —
+    // re-sealing that would poison the requester with an unresolvable sender.
+    // The author is always this device's owner, so attribute to self.
+    const from = row.direction === "out" ? user.user_id : row.peer_id;
+    const originNick = row.direction === "out" ? nick : (row.sender_nick ?? "");
     const envelope = sealText(
       this.peerKeyOrThrow(toUserId, keys),
       user.user_id,
@@ -690,8 +730,8 @@ class YaprClient {
       nick,
       {
         id: row.message_id,
-        from: row.peer_id,
-        nick: row.sender_nick ?? "",
+        from,
+        nick: originNick,
         sentAt: row.created_at,
       }
     );
@@ -1112,6 +1152,12 @@ class YaprClient {
         // Best effort; the next snapshot heals it.
       }
       if (!store.getGroupCache(groupId)) return;
+    }
+    if (!fwd.from || store.isGroupThreadKey(fwd.from)) {
+      // Poisoned attribution from a pre-fix sharer (outbound rows filed with
+      // the thread key as sender). Drop the row — the gap re-resolves on the
+      // next round once sharers upgrade. The caller still acks.
+      return;
     }
     const stored = store.insertIncomingMessage(
       fwd.from,
