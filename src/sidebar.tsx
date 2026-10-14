@@ -32,8 +32,9 @@ function toItems(threads: OpenThread[]): ListItem[] {
 export default memo(function Sidebar({focused, openPeerId, setContactInfo, onOpenBrowser}: {focused: boolean, openPeerId?: string | undefined, setContactInfo: (value: {alias: string, peerId: string} | undefined)=>unknown, onOpenBrowser: ()=>unknown}) {
     const [itemFocused, setItemFocused] = useState<ListItem | undefined>()
     const [threads, setThreads] = useState(getOpenThreads())
-    // Auto-select once on first load only. Re-running this on every contacts
-    // change used to yank the open thread away whenever a message arrived.
+    // First selection per mount: with no open thread (boot, session reset)
+    // open the first one; with a live selection (every modal open/close
+    // remount) only sync the highlight — never steal the open thread.
     const didInitialSelect = useRef(false)
     // Two-step delete confirm: thread key awaiting a `y`, cleared on anything else.
     const [confirmDelete, setConfirmDelete] = useState<ListItem | undefined>()
@@ -95,6 +96,15 @@ export default memo(function Sidebar({focused, openPeerId, setContactInfo, onOpe
 
     useEffect(() => {
         if (didInitialSelect.current) return
+        if (openPeerId) {
+            // Remount (any fullscreen modal open/close cycle) with a live
+            // selection: highlight follows the open thread, but NEVER re-open
+            // the first thread — that yanked the displayed chat on every
+            // modal close.
+            didInitialSelect.current = true
+            syncHighlightToOpen()
+            return
+        }
         const first = items.find((item) => item.value !== "::contacts")
         if (first) {
             didInitialSelect.current = true
