@@ -9,6 +9,7 @@ import {
   displayNameFor,
   getGroupCache,
   getGroupMembers,
+  getLatestAdvertisedNick,
   getMemberNick,
   getSessionUser,
   getSharedNick,
@@ -145,7 +146,10 @@ export default memo(function GroupNicksModal({
       <Box marginTop={1} flexDirection="column">
         {members.map((m, i) => {
           const nick = currentNick(m.user_id);
-          const shown = nick || displayNameFor(groupId, m.user_id, null);
+          // Advertised fallback: rows show the name from the member's own
+          // messages when no pet/shared/alias exists, so the list never looks
+          // emptier than the chat itself.
+          const shown = nick || displayNameFor(groupId, m.user_id, getLatestAdvertisedNick(groupId, m.user_id));
           const tag = m.user_id === ownId ? " (you)" : nick ? " (local)" : "";
           const label = `${shown}${tag}`;
           if (editing === m.user_id) {
