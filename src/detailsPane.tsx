@@ -19,6 +19,7 @@ import {
   updateContact,
 } from "./store.js";
 import { client } from "./client.js";
+import GroupHeirModal from "./groupHeirModal.js";
 import type { ContactInfo } from "./types.js";
 
 type Entry =
@@ -50,6 +51,9 @@ export default memo(function DetailsPane({
   const [editing, setEditing] = useState<string | undefined>();
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | undefined>();
+  // Admin departure with company routes through heir selection first (the
+  // nickname master snapshot goes to the heir before the leave lands).
+  const [pickingHeir, setPickingHeir] = useState(false);
   useEditMode(editing !== undefined);
   const theme = getTheme();
   const groupId = groupIdFromThreadKey(threadKey);
@@ -97,9 +101,39 @@ export default memo(function DetailsPane({
     .filter(({ e }) => e.kind === "action");
   const maxAction = Math.max(0, selectables.length - 1);
 
+  const leaveGroupNow = (heirId?: string) => {
+    if (!groupId) return;
+    client.leaveGroup(groupId, heirId);
+    dropGroupCache(groupId);
+    closeChat(threadKey);
+    socketBus.emit("chats_changed");
+    setContactInfo(undefined);
+    onClose();
+  };
+
+  /**
+   * Admin handover: snapshot the nickname master to the heir first (it must
+   * land before the leave does — same socket, sequential writes), then leave
+   * with the heir designated. A failed snapshot aborts the leave: without
+   * transport neither can go through.
+   */
+  const confirmLeaveWithHeir = async (heirId: string) => {
+    if (!groupId) return;
+    try {
+      await client.sendNickSnapshot(groupId, heirId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setPickingHeir(false);
+      return;
+    }
+    setPickingHeir(false);
+    leaveGroupNow(heirId);
+  };
+
   useInput((input, key) => {
     if (!focused) return;
     if (isBlocked()) return;
+    if (pickingHeir) return;
     if (editing) {
       if (key.escape) {
         setEditing(undefined);
@@ -109,12 +143,18 @@ export default memo(function DetailsPane({
     if (confirm) {
       if (input === "y") {
         if (confirm === "leave" && groupId) {
-          client.leaveGroup(groupId);
-          dropGroupCache(groupId);
-          closeChat(threadKey);
-          socketBus.emit("chats_changed");
-          setContactInfo(undefined);
-          onClose();
+          const ownId = getSessionUser()?.user_id;
+          const othersRemain =
+            ownId != null &&
+            isGroupAdmin(groupId, ownId) &&
+            getGroupMembers(groupId).some((m) => m.user_id !== ownId);
+          if (othersRemain) {
+            // Hand off first: pick the heir, then leave below.
+            setConfirm(undefined);
+            setPickingHeir(true);
+          } else {
+            leaveGroupNow();
+          }
         } else if (confirm === "delete") {
           deleteContact(threadKey);
           closeChat(threadKey);
@@ -182,6 +222,26 @@ export default memo(function DetailsPane({
   };
 
   let actionCursor = -1;
+
+  if (pickingHeir && groupId) {
+    const ownId = getSessionUser()?.user_id ?? "";
+    return (
+      <Box
+        width={"28%"}
+        borderColor={theme.roles.borderFocused}
+        borderStyle={"round"}
+        flexDirection="column"
+        paddingX={1}
+      >
+        <GroupHeirModal
+          groupId={groupId}
+          ownId={ownId}
+          onPick={(heirId) => void confirmLeaveWithHeir(heirId)}
+          onClose={() => setPickingHeir(false)}
+        />
+      </Box>
+    );
+  }
 
   return (
     <Box

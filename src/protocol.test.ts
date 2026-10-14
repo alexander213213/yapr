@@ -70,6 +70,7 @@ describe("request builders", () => {
     expect(addMembersRequest("g", ["2"])).toMatchObject({ type: "add_members", groupId: "g" });
     expect(removeMemberRequest("g", "2")).toMatchObject({ type: "remove_member" });
     expect(leaveGroupRequest("g")).toEqual({ v: 2, type: "leave_group", groupId: "g" });
+    expect(leaveGroupRequest("g", "9")).toEqual({ v: 2, type: "leave_group", groupId: "g", heir: "9" });
     expect(renameGroupRequest("g", "n")).toMatchObject({ type: "rename_group", name: "n" });
     expect(fetchGroupsRequest()).toEqual({ v: 2, type: "fetch_groups" });
     expect(requestHistoryRequest("g", "1")).toMatchObject({ type: "request_history", to: "1" });

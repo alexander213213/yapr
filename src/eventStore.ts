@@ -28,6 +28,8 @@ export type BusEvents = {
   read_receipt: [msg: ReadReceiptFrame];
   /** Group membership snapshot changed (refresh group UI). */
   groups_changed: [];
+  /** Shared nickname record changed (refresh nicks UI + thread headers). */
+  nicks_changed: [];
   /** A backfill round landed (quiet thread refresh notice, not a toast). */
   history_sync: [msg: { groupId: string; count: number }];
   /** Silent account-recovery outcome (persistent status line, not a toast). */
