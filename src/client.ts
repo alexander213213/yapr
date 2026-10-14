@@ -30,7 +30,7 @@ import {
   type ServerFrame,
 } from "./protocol.js";
 import { loadOrCreateIdentity, openEnvelope, sealText, UNREADABLE_PLACEHOLDER } from "./crypto.js";
-import type { ForwardBlock } from "./crypto.js";
+import type { ForwardBlock, NickPayload } from "./crypto.js";
 import * as store from "./store.js";
 import { loadReclaimToken, resolveDataDir, saveReclaimToken } from "./storage.js";
 import { socketBus } from "./eventStore.js";
@@ -135,7 +135,16 @@ class YaprClient {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private keysChain: Promise<void> = Promise.resolve();
   private keysWaiter: ((keys: Record<string, string>) => void) | null = null;
-  private groupsWaiter: ((groups: GroupsFrame) => void) | null = null;
+  // Membership snapshot waiters: a SET, not a slot. Overlapping refreshes
+  // (e.g. a group_updated broadcast landing mid-refresh — which creation
+  // always triggers) must all settle; a single slot lets the second request
+  // clobber the first, orphaning its promise past its own timeout. Snapshot
+  // reads are idempotent, so one answer resolves every pending waiter.
+  private groupsWaiters = new Set<{
+    resolve: (groups: GroupsFrame) => void;
+    reject: (err: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
   // Group creation resolves on group_created but must ALSO reject on error
   // frames: without this, a server rejection (rate limit, unknown member)
   // leaves the caller hanging until timeout with the error toast hidden
@@ -438,9 +447,15 @@ class YaprClient {
   }
 
   private resolveGroups(frame: GroupsFrame): void {
-    const waiter = this.groupsWaiter;
-    this.groupsWaiter = null;
-    if (waiter) waiter(frame);
+    // Fan-out: every pending refresh shares the latest snapshot. Late
+    // duplicates (a second answer to already-settled requests) find an
+    // empty set and drop.
+    const pending = [...this.groupsWaiters];
+    this.groupsWaiters.clear();
+    for (const waiter of pending) {
+      clearTimeout(waiter.timer);
+      waiter.resolve(frame);
+    }
   }
 
   private resolveGroupCreated(frame: GroupCreatedFrame): void {
@@ -468,19 +483,28 @@ class YaprClient {
   /** Pull the membership snapshot into the local cache. */
   async refreshGroups(): Promise<void> {
     if (!this.online) throw new Error("offline");
+    type GroupsEntry = {
+      resolve: (groups: GroupsFrame) => void;
+      reject: (err: Error) => void;
+      timer: ReturnType<typeof setTimeout>;
+    };
     const frame = await new Promise<GroupsFrame>((resolve, reject) => {
       if (!this.sendFrame(fetchGroupsRequest())) {
         reject(new Error("offline"));
         return;
       }
-      this.groupsWaiter = resolve;
+      // Own entry, own timer: a sibling settling first only removes its own
+      // entry, so overlapping refreshes can neither orphan nor double-settle
+      // each other.
+      let entry: GroupsEntry;
       const timer = setTimeout(() => {
-        if (this.groupsWaiter) {
-          this.groupsWaiter = null;
-          reject(new Error("groups lookup timed out"));
+        if (this.groupsWaiters.delete(entry)) {
+          entry.reject(new Error("groups lookup timed out"));
         }
       }, KEYS_TIMEOUT_MS);
       if (timer.unref) timer.unref();
+      entry = { resolve, reject, timer };
+      this.groupsWaiters.add(entry);
     });
     const seen = new Set<string>();
     const knownBefore = new Set(store.listGroupCache().map((g) => g.groupId));
@@ -830,8 +854,166 @@ class YaprClient {
     this.sendFrame(removeMemberRequest(groupId, userId));
   }
 
-  leaveGroup(groupId: string): void {
-    this.sendFrame(leaveGroupRequest(groupId));
+  leaveGroup(groupId: string, heir?: string): void {
+    this.sendFrame(leaveGroupRequest(groupId, heir));
+  }
+
+  /**
+   * Propose a nickname to the group's admin (any member may propose any
+   * member's nick, own included — trust group). Delivered as an E2EE
+   * machine frame inside a normal DM; the admin merges by LWW and pushes.
+   * Throws when offline, keyless, or when no admin is known.
+   */
+  async proposeNick(groupId: string, target: string, nick: string | null): Promise<void> {
+    const user = store.getSessionUser();
+    if (!user) throw new Error("not registered");
+    if (!this.online) throw new Error("offline");
+    const admin = store.getGroupMembers(groupId).find((m) => m.role === "admin");
+    if (!admin || admin.user_id === user.user_id) {
+      throw new Error(admin ? "propose to others only" : "no admin known");
+    }
+    const keys = await this.requestKeys([admin.user_id]);
+    const envelope = sealText(
+      this.peerKeyOrThrow(admin.user_id, keys),
+      user.user_id,
+      admin.user_id,
+      "",
+      store.nickForContext(groupId, user.user_id),
+      undefined,
+      { kind: "nick-proposal", target, nick, updatedAt: Date.now() }
+    );
+    if (!this.sendFrame(sendRequest(admin.user_id, randomUUID(), envelope, groupId))) {
+      throw new Error("offline");
+    }
+  }
+
+  /**
+   * Push a merged nickname to every current member (admin only). Mirrors the
+   * group text fan-out: one shared payload, per-member seals.
+   */
+  async pushNickUpdate(
+    groupId: string,
+    target: string,
+    nick: string | null,
+    updatedAt: number
+  ): Promise<void> {
+    const user = store.getSessionUser();
+    if (!user) throw new Error("not registered");
+    if (!this.online) throw new Error("offline");
+    if (!store.isGroupAdmin(groupId, user.user_id)) throw new Error("not the admin");
+    let members = store.getGroupMembers(groupId).filter((m) => m.user_id !== user.user_id);
+    if (members.length === 0) {
+      await this.refreshGroups();
+      members = store.getGroupMembers(groupId).filter((m) => m.user_id !== user.user_id);
+    }
+    if (members.length === 0) return;
+    const keys = await this.requestKeys(members.map((m) => m.user_id));
+    const envelopes = members.map((m) => ({
+      to: m.user_id,
+      ...sealText(this.peerKeyOrThrow(m.user_id, keys), user.user_id, m.user_id, "", "", undefined, {
+        kind: "nick-update",
+        target,
+        nick,
+        updatedAt,
+      } satisfies NickPayload),
+    }));
+    if (!this.sendFrame(sendGroupRequest(groupId, randomUUID(), envelopes))) {
+      throw new Error("offline");
+    }
+  }
+
+  /**
+   * Hand the full nickname master to the chosen heir (admin leaving).
+   * Single DM; the heir merges row-by-row by LWW on receipt.
+   */
+  async sendNickSnapshot(groupId: string, toUserId: string): Promise<void> {
+    const user = store.getSessionUser();
+    if (!user) throw new Error("not registered");
+    if (!this.online) throw new Error("offline");
+    const keys = await this.requestKeys([toUserId]);
+    const envelope = sealText(
+      this.peerKeyOrThrow(toUserId, keys),
+      user.user_id,
+      toUserId,
+      "",
+      store.nickForContext(groupId, user.user_id),
+      undefined,
+      { kind: "nick-snapshot", nicks: store.getSharedNicks(groupId) }
+    );
+    if (!this.sendFrame(sendRequest(toUserId, randomUUID(), envelope, groupId))) {
+      throw new Error("offline");
+    }
+  }
+
+  /**
+   * Apply one merged nickname row locally. Returns true when the stored
+   * record changed (caller repaints).
+   */
+  private applySharedNick(
+    groupId: string,
+    target: string,
+    nick: string | null,
+    updatedAt: number
+  ): boolean {
+    const merged = store.mergeSharedNick(store.getSharedNick(groupId, target), {
+      nick,
+      updatedAt,
+    });
+    if (!merged) return false;
+    const current = store.getSharedNick(groupId, target);
+    if (current && current.nick === merged.nick && current.updatedAt === merged.updatedAt) {
+      return false;
+    }
+    store.setSharedNick(groupId, target, merged.nick, merged.updatedAt);
+    return true;
+  }
+
+  /**
+   * Route a decrypted machine frame. Group-tagged per current-membership
+   * rules on send; the receiver additionally requires the group to be known
+   * (else ack-and-drop). Never files chat, badges, or receipts.
+   */
+  private async handleNickFrame(
+    frame: IncomingFrame,
+    kind: NickPayload
+  ): Promise<void> {
+    const user = store.getSessionUser();
+    if (!user) return;
+    if (kind.kind === "nick-proposal") {
+      // Only the current admin merges proposals; anyone else ack-and-drops
+      // (e.g. proposals overtaken by an admin change in flight).
+      if (!frame.groupId || !store.isGroupAdmin(frame.groupId, user.user_id)) return;
+      if (this.applySharedNick(frame.groupId, kind.target, kind.nick, kind.updatedAt)) {
+        socketBus.emit("nicks_changed");
+        socketBus.emit("chats_changed");
+        try {
+          await this.pushNickUpdate(frame.groupId, kind.target, kind.nick, kind.updatedAt);
+        } catch {
+          // Best effort: the next proposal or snapshot heals it.
+        }
+      }
+      return;
+    }
+    if (kind.kind === "nick-update") {
+      if (!frame.groupId) return;
+      if (this.applySharedNick(frame.groupId, kind.target, kind.nick, kind.updatedAt)) {
+        socketBus.emit("nicks_changed");
+        socketBus.emit("chats_changed");
+      }
+      return;
+    }
+    // Snapshot: merge row-by-row by LWW; single repaint when anything moved.
+    let moved = false;
+    for (const row of kind.nicks) {
+      if (!frame.groupId) break;
+      if (this.applySharedNick(frame.groupId, row.userId, row.nick, row.updatedAt)) {
+        moved = true;
+      }
+    }
+    if (moved) {
+      socketBus.emit("nicks_changed");
+      socketBus.emit("chats_changed");
+    }
   }
 
   renameGroup(groupId: string, name: string): void {
@@ -853,6 +1035,13 @@ class YaprClient {
       ciphertext: frame.ciphertext,
       nonce: frame.nonce,
     });
+    if (opened.ok && opened.kind) {
+      // Machine frame (nickname control): route to the nick machinery, ack
+      // for server cleanup, and never file chat, badges, or receipts.
+      await this.handleNickFrame(frame, opened.kind);
+      this.sendFrame(ackRequest(frame.messageId));
+      return;
+    }
     if (opened.ok && opened.fwd && frame.groupId) {
       // Backfilled history row: file silently with ORIGINAL attribution and
       // timestamp, then ack like any other row (the server must drop its

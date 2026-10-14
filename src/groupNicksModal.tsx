@@ -4,19 +4,32 @@ import { memo, useEffect, useState } from "react";
 import { getTheme } from "./themes.js";
 import { useEditMode } from "./editMode.js";
 import { socketBus } from "./eventStore.js";
+import { client } from "./client.js";
 import {
   displayNameFor,
   getGroupCache,
   getGroupMembers,
   getMemberNick,
   getSessionUser,
+  getSharedNick,
+  isGroupAdmin,
   setMemberNick,
+  setSharedNick,
 } from "./store.js";
 
+/** Nickname editor cap: 16 visible characters (grapheme-safe for emoji). */
+export const NICK_MAX_GRAPHEMES = 16;
+
+export function truncateNick(value: string): string {
+  return Array.from(value.trim()).slice(0, NICK_MAX_GRAPHEMES).join("");
+}
+
 /**
- * Per-member nicknames in one modal: your own row sets the nick you advertise
- * to the group (inside encrypted envelopes); any other row sets a local pet
- * name (display-only, never sent). Blank clears back to fallbacks.
+ * Per-member nicknames in one modal. Editing a row writes the personal
+ * override instantly AND proposes it to the admin's shared record (pushed
+ * back to everyone on merge); the admin's own edits apply to the master
+ * directly. Blank clears the personal label (a blank proposal clears
+ * shared state too). Rows render the effective name.
  */
 export default memo(function GroupNicksModal({
   groupId,
@@ -37,16 +50,56 @@ export default memo(function GroupNicksModal({
   void membersVersion;
 
   // Peer changes (admin edits, membership turnover) must reflect live,
-  // like the members modal.
+  // like the members modal — plus shared-nick pushes from the admin.
   useEffect(() => {
     const refresh = () => setMembersVersion((v) => v + 1);
     socketBus.on("groups_changed", refresh);
+    socketBus.on("nicks_changed", refresh);
     return () => {
       socketBus.off("groups_changed", refresh);
+      socketBus.off("nicks_changed", refresh);
     };
   }, []);
 
+  const [nickError, setNickError] = useState<string | undefined>();
+
   const currentNick = (userId: string): string => getMemberNick(groupId, userId) ?? "";
+
+  /**
+   * Submit a nickname edit: personal override instantly, then shared state.
+   * Admins write the master directly and push (own row and others alike);
+   * everyone else proposes to the admin. Unchanged values skip the network.
+   */
+  const submitNick = (targetId: string, raw: string) => {
+    const clean = truncateNick(raw);
+    setMemberNick(groupId, targetId, clean);
+    setMembersVersion((x) => x + 1);
+    setEditing(undefined);
+    setNickError(undefined);
+    const shared = getSharedNick(groupId, targetId)?.nick ?? null;
+    if ((clean || null) === shared) return;
+    const now = Date.now();
+    const adminHere = ownId ? isGroupAdmin(groupId, ownId) : false;
+    if (adminHere) {
+      void (async () => {
+        try {
+          setSharedNick(groupId, targetId, clean || null, now);
+          setMembersVersion((x) => x + 1);
+          await client.pushNickUpdate(groupId, targetId, clean || null, now);
+        } catch (err) {
+          setNickError(err instanceof Error ? err.message : String(err));
+        }
+      })();
+      return;
+    }
+    void (async () => {
+      try {
+        await client.proposeNick(groupId, targetId, clean || null);
+      } catch (err) {
+        setNickError(err instanceof Error ? err.message : String(err));
+      }
+    })();
+  };
 
   useInput((input, key) => {
     if (editing) {
@@ -87,12 +140,13 @@ export default memo(function GroupNicksModal({
   return (
     <Box width={"60%"} borderColor={theme.roles.borderFocused} borderStyle={"round"} flexDirection="column" paddingX={2} paddingY={1}>
       <Text bold>Nicknames in {group.name}</Text>
-      <Text dimColor>Enter edits · Esc stops editing, Esc again backs out · blank clears</Text>
+      <Text dimColor>Enter edits (max 16) · Esc stops editing, Esc again backs out · blank clears</Text>
+      {nickError ? <Text color={theme.roles.error}>{nickError}</Text> : null}
       <Box marginTop={1} flexDirection="column">
         {members.map((m, i) => {
           const nick = currentNick(m.user_id);
           const shown = nick || displayNameFor(groupId, m.user_id, null);
-          const tag = m.user_id === ownId ? " (you — advertised)" : " (local label)";
+          const tag = m.user_id === ownId ? " (you)" : nick ? " (local)" : "";
           const label = `${shown}${tag}`;
           if (editing === m.user_id) {
             return (
@@ -100,14 +154,10 @@ export default memo(function GroupNicksModal({
                 <Text color={theme.roles.accent}>{"> "}</Text>
                 <TextInput
                   value={draft}
-                  onChange={setDraft}
+                  onChange={(v) => setDraft(truncateNick(v))}
                   focus={true}
                   placeholder="nickname"
-                  onSubmit={(v) => {
-                    setMemberNick(groupId, m.user_id, v);
-                    setMembersVersion((x) => x + 1);
-                    setEditing(undefined);
-                  }}
+                  onSubmit={(v) => submitNick(m.user_id, v)}
                 />
               </Box>
             );

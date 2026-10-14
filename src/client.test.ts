@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
@@ -11,6 +11,8 @@ process.env.YAPR_DATA_DIR = TEST_DIR;
 
 const { resolveEndpoint, resolveTlsOptions, DEFAULT_HOST, DEFAULT_PORT, client } = await import("./client.js");
 const { socketBus } = await import("./eventStore.js");
+const store = await import("./store.js");
+const { loadOrCreateIdentity, sealText } = await import("./crypto.js");
 
 describe("resolveEndpoint", () => {
   it("defaults to the staging relay", () => {
@@ -219,5 +221,137 @@ describe("history auto-loop", () => {
     });
     expect(b.historySync.get("g-cap")).toMatchObject({ done: true });
     b.historySync.delete("g-cap");
+  });
+});
+
+describe("groupsWaiter fan-out", () => {
+  type Entry = {
+    resolve: (g: unknown) => void;
+    reject: (e: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+  };
+  type Backdoor = {
+    dispatch: (f: { v: 2; type: string; [k: string]: unknown }) => void;
+    groupsWaiters: Set<Entry>;
+    refreshGroups: () => Promise<void>;
+  };
+  const backdoor = () => client as unknown as Backdoor;
+  const entry = (fns: { resolve: (g: unknown) => void; reject: (e: Error) => void }) => ({
+    ...fns,
+    timer: setTimeout(() => {}, 60000),
+  });
+  const clearAll = (b: Backdoor) => {
+    for (const w of b.groupsWaiters) clearTimeout(w.timer);
+    b.groupsWaiters.clear();
+  };
+
+  it("resolves every pending refresh with one snapshot, then drops late duplicates", () => {
+    const b = backdoor();
+    const got: unknown[] = [];
+    const errs: Error[] = [];
+    b.groupsWaiters.add(entry({ resolve: (g) => { got.push(["a", g]); }, reject: (e) => { errs.push(e); } }));
+    b.groupsWaiters.add(entry({ resolve: (g) => { got.push(["b", g]); }, reject: (e) => { errs.push(e); } }));
+    try {
+      b.dispatch({ v: 2, type: "groups", groups: [] });
+      expect(got).toHaveLength(2);
+      expect(errs).toHaveLength(0);
+      expect(b.groupsWaiters.size).toBe(0);
+      // Late duplicate answer: nobody pending, nothing happens, no crash.
+      b.dispatch({ v: 2, type: "groups", groups: [] });
+      expect(got).toHaveLength(2);
+    } finally {
+      clearAll(b);
+    }
+  });
+
+  it("times out each waiter independently (no cross-talk)", async () => {
+    vi.useFakeTimers();
+    const b = backdoor();
+    const c = client as unknown as { state: string; sendFrame: (o: object) => boolean };
+    const prevState = c.state;
+    const prevSend = c.sendFrame.bind(client);
+    c.state = "online";
+    c.sendFrame = () => true;
+    try {
+      const p1 = b.refreshGroups().then(
+        () => "resolved",
+        (e: Error) => `rejected:${e.message}`
+      );
+      const p2 = b.refreshGroups().then(
+        () => "resolved",
+        (e: Error) => `rejected:${e.message}`
+      );
+      expect(b.groupsWaiters.size).toBe(2);
+      await vi.advanceTimersByTimeAsync(10000);
+      expect(await p1).toBe("rejected:groups lookup timed out");
+      expect(await p2).toBe("rejected:groups lookup timed out");
+      expect(b.groupsWaiters.size).toBe(0);
+    } finally {
+      c.state = prevState;
+      c.sendFrame = prevSend;
+      clearAll(b);
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("nick machine frames", () => {
+  type Backdoor = {
+    dispatch: (f: { v: 2; type: string; [k: string]: unknown }) => void;
+  };
+  const backdoor = () => client as unknown as Backdoor;
+  const SENDER_DIR = path.join(os.tmpdir(), `yapr-nick-sender-${process.pid}-${Date.now()}`);
+  fs.rmSync(SENDER_DIR, { recursive: true, force: true });
+
+  it("files nick updates silently with no unread bump or chat fanfare", async () => {
+    const me = `me-nick-${Date.now()}`;
+    const sender = `sender-nick-${Date.now()}`;
+    const target = `target-nick-${Date.now()}`;
+    const gid = `g-nick-${Date.now()}`;
+    // Receiver identity + session in the isolated test dir.
+    const mePub = loadOrCreateIdentity().publicKeyB64;
+    store.saveSessionUser(me, "s3cret");
+    // Sender identity in its own dir; seal there so the sender private key
+    // is the one used (mirrors two devices).
+    process.env.YAPR_DATA_DIR = SENDER_DIR;
+    const senderPub = loadOrCreateIdentity().publicKeyB64;
+    const env = sealText(mePub, sender, me, "", "", undefined, {
+      kind: "nick-update",
+      target,
+      nick: "Bobo",
+      updatedAt: 1700000000000,
+    });
+    process.env.YAPR_DATA_DIR = TEST_DIR;
+    // Pre-seed the sender key so no network lookup is needed.
+    store.setPeerKey(sender, senderPub);
+
+    const incoming: string[] = [];
+    let syncs = 0;
+    const onIncoming = (m: unknown) => { incoming.push(m as string); };
+    const onSync = () => { syncs += 1; };
+    socketBus.on("incoming_message", onIncoming);
+    socketBus.on("history_sync", onSync);
+    socketBus.on("nicks_changed", onSync);
+    try {
+      backdoor().dispatch({
+        v: 2,
+        type: "incoming",
+        from: sender,
+        messageId: "m-nick-1",
+        ciphertext: env.ciphertext,
+        nonce: env.nonce,
+        timestamp: 1700000000001,
+        groupId: gid,
+      });
+      await new Promise((r) => setTimeout(r, 100));
+    } finally {
+      socketBus.off("incoming_message", onIncoming);
+      socketBus.off("history_sync", onSync);
+      socketBus.off("nicks_changed", onSync);
+    }
+    expect(store.getSharedNick(gid, target)).toEqual({ nick: "Bobo", updatedAt: 1700000000000 });
+    expect(incoming).toHaveLength(0);
+    expect(store.getUnreadCounts()[sender] ?? 0).toBe(0);
+    expect(syncs).toBeGreaterThan(0);
   });
 });

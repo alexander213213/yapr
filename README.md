@@ -90,8 +90,9 @@ Keys (shortcuts stand down while typing in any text field, except `Tab`):
   (`Enter` adds, `Ctrl+A` adds a raw ID, `Tab` creates, `Esc` back).
 - Group members/details views: `a` add (admin, `Ctrl+A` for a raw ID),
   `d` remove with `y` to confirm (admin), `Enter` edits a nickname in the
-  nicks view, `Esc` goes back. The sidebar highlight always follows the open
-  chat; deleting/closing falls back to it.
+  nicks view, `Esc` goes back. Leaving as admin with company asks for an heir
+  first. The sidebar highlight always follows the open chat; deleting/closing
+  falls back to it.
 - History for newcomers arrives automatically and silently (no prompt): the
   oldest online member's client shares the missing window; a quiet line notes
   what landed.
@@ -134,10 +135,21 @@ Create with `g`: name it, pick members (rapid `Enter`-to-add, type to filter,
 `Ctrl+A` adds a raw user ID without needing them as a contact, `Tab` creates
 with the selection). Each message is sealed separately per member — the server
 only routes opaque blobs. The creator admins: adding/removing members, renaming.
-Leaving passes admin to the longest-tenured member; the last one out dissolves it.
+A departing admin with company first chooses an heir (nickname record transfers
+with the crown); otherwise leaving passes admin to the longest-tenured member.
+The last one out dissolves the group.
 
-- **Details (`i`)**: info, member list, nicknames, leave. Your own nickname row sets
-  what you advertise to that group; other rows set local pet names (never sent).
+- **Details (`i`)**: info, member list, nicknames, leave.
+- **Nicknames (shared record)**: editing any row applies instantly on your
+  screen and proposes the name to the admin, who merges last-write-wins and
+  pushes it to everyone — no prompts anywhere. Rows show `(local)` only for
+  your personal overrides, which always win locally and never propagate.
+  Blank clears, names cap at 16 visible characters, and your envelope-advertised
+  nickname seeds newcomers who have no record yet. A departing admin with
+  company must first choose an heir (the nickname record transfers with the
+  crown); if an admin vanishes instead, the heir starts empty and names rebuild
+  through normal edits — display falls back exactly as before. Both sides need
+  the update for sharing; older clients keep local-only nicknames.
 - **History for newcomers**: automatic and silent. When you join a group with no
   local history, your client asks for the missing window; the server relays to
   the oldest online member, whose client re-sends those rows re-encrypted for
