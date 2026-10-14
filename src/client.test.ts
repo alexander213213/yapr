@@ -13,7 +13,6 @@ const { resolveEndpoint, resolveTlsOptions, DEFAULT_HOST, DEFAULT_PORT, client }
 const { socketBus } = await import("./eventStore.js");
 const store = await import("./store.js");
 const { loadOrCreateIdentity, sealText } = await import("./crypto.js");
-
 describe("resolveEndpoint", () => {
   it("defaults to the staging relay", () => {
     expect(resolveEndpoint({})).toEqual({ host: DEFAULT_HOST, port: DEFAULT_PORT, fromDefault: true });
@@ -353,5 +352,30 @@ describe("nick machine frames", () => {
     expect(incoming).toHaveLength(0);
     expect(store.getUnreadCounts()[sender] ?? 0).toBe(0);
     expect(syncs).toBeGreaterThan(0);
+  });
+});
+
+describe("poisoned history migration", () => {
+  type Backdoor = {
+    migratePoisonedHistoryOnce: () => void;
+    poisonMigrated: boolean;
+  };
+  const backdoor = () => client as unknown as Backdoor;
+
+  it("wipes thread-key rows once and re-queues their groups", () => {
+    const g = `mig-${Date.now()}`;
+    store.insertIncomingMessage(`g:${g}`, `mig-bad-${Date.now()}`, "poisoned", 1000, g);
+    store.insertIncomingMessage(`good-${Date.now()}`, `mig-ok-${Date.now()}`, "fine", 2000, g, "G");
+    const b = backdoor();
+    b.poisonMigrated = false;
+    b.migratePoisonedHistoryOnce();
+    // Poisoned row gone, legit row kept.
+    expect(store.getUnreadCounts()[`g:${g}`] ?? 0).toBe(0);
+    // Group re-queued for backfill.
+    expect(JSON.parse(store.getSetting("history_sync_pending"))).toContain(g);
+    // Second run is a no-op (flag set, nothing left).
+    b.migratePoisonedHistoryOnce();
+    expect(JSON.parse(store.getSetting("history_sync_pending"))).toContain(g);
+    b.poisonMigrated = false;
   });
 });
