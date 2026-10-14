@@ -1,6 +1,7 @@
 import { Box, Text, useInput } from "ink";
 import { memo, useEffect, useState } from "react";
 import ContactsBrowser from "./contactsBrowser.js";
+import GroupAddIdModal from "./groupAddIdModal.js";
 import { getTheme } from "./themes.js";
 import { socketBus } from "./eventStore.js";
 import {
@@ -15,6 +16,8 @@ import { client } from "./client.js";
 /**
  * Member list for a group. `a` opens the picker to add (admins), `d` removes
  * with confirm (admins), Esc closes. Refreshes on group snapshots.
+ * The picker accepts typed IDs via Ctrl+A (same modal as group creation);
+ * validated ids merge into the same fresh-member filter before adding.
  */
 export default memo(function GroupMembersModal({
   groupId,
@@ -25,6 +28,10 @@ export default memo(function GroupMembersModal({
 }) {
   const [version, setVersion] = useState(0);
   const [adding, setAdding] = useState(false);
+  const [addingById, setAddingById] = useState(false);
+  // Ids added this session (both paths): keeps the typed-ID validator and
+  // the picker's fresh-filter honest before the membership snapshot refreshes.
+  const [sessionAdded, setSessionAdded] = useState<string[]>([]);
   const [confirmRemove, setConfirmRemove] = useState<string | undefined>();
   const [highlight, setHighlight] = useState(0);
   const theme = getTheme();
@@ -42,13 +49,29 @@ export default memo(function GroupMembersModal({
   }, []);
   void version;
 
+  // Removals shrink the list under a stale highlight: clamp it so Enter/d
+  // always land on a visible row.
+  useEffect(() => {
+    setHighlight((h) => Math.min(h, Math.max(0, members.length - 1)));
+  }, [members.length]);
+
   useInput((input, key) => {
-    if (adding) return;
+    if (addingById) return;
+    if (adding) {
+      if (key.ctrl && (input === "a" || input === "\x01")) {
+        setAddingById(true);
+      }
+      return;
+    }
     if (confirmRemove) {
+      // Explicit answers only: stray keys must neither remove nor dismiss,
+      // or the (y/n) hint overpromises.
       if (input === "y") {
         client.removeMember(groupId, confirmRemove);
+        setConfirmRemove(undefined);
+      } else if (input === "n" || key.escape) {
+        setConfirmRemove(undefined);
       }
-      setConfirmRemove(undefined);
       return;
     }
     if (key.escape) {
@@ -84,9 +107,31 @@ export default memo(function GroupMembersModal({
   }
 
   if (adding) {
+    const knownIds = [...members.map((m) => m.user_id), ...sessionAdded];
+    const trackAdded = (ids: string[]) => {
+      setSessionAdded((prev) => [...prev, ...ids.filter((id) => !prev.includes(id))]);
+    };
+    if (addingById) {
+      return (
+        <Box width={"80%"} borderColor={theme.roles.borderFocused} borderStyle={"round"} paddingX={2} paddingY={1} flexDirection="column">
+          <Text bold>Add to {group.name}</Text>
+          <Box marginTop={1}>
+            <GroupAddIdModal
+              picked={knownIds}
+              onAdd={(id) => {
+                trackAdded([id]);
+                client.addMembers(groupId, [id]);
+              }}
+              onClose={() => setAddingById(false)}
+            />
+          </Box>
+        </Box>
+      );
+    }
     return (
       <Box width={"80%"} borderColor={theme.roles.borderFocused} borderStyle={"round"} paddingX={2} paddingY={1} flexDirection="column">
         <Text bold>Add to {group.name}</Text>
+        <Text dimColor>Ctrl+A adds a raw ID</Text>
         <Box marginTop={1} height={10}>
           <ContactsBrowser
             pickMode
@@ -96,6 +141,7 @@ export default memo(function GroupMembersModal({
                 (id) => !members.some((m) => m.user_id === id)
               );
               if (fresh.length > 0) {
+                trackAdded(fresh);
                 client.addMembers(groupId, fresh);
               }
             }}
@@ -111,7 +157,7 @@ export default memo(function GroupMembersModal({
       <Text bold>
         {group.name} ({members.length})
       </Text>
-      <Text dimColor>{admin ? "a add · d remove · Esc back" : "Esc back"}</Text>
+        <Text dimColor>{admin ? "a add · d/Del remove · Esc back" : "Esc back"}</Text>
       {confirmRemove ? (
         <Box marginTop={1} flexDirection="column">
           <Text bold>Remove {displayNameFor(groupId, confirmRemove, null)}?</Text>

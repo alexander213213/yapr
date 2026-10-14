@@ -112,6 +112,16 @@ export default memo(function App() {
     }, [syncNotice])
 
     useEffect(() => {
+        // The open thread vanished under us (sidebar delete/close, session
+        // reset): never leave the details pane mounted or focus pointing at
+        // an unmounted view.
+        if (contactInfo === undefined) {
+            setDetailsOpen(false)
+            if (focused === "details") setFocus("main")
+        }
+    }, [contactInfo])
+
+    useEffect(() => {
         const onResize = () => {
             setSize({
                 cols: stdout.columns,
@@ -147,7 +157,15 @@ export default memo(function App() {
         }
         if (input === "i" && shortcutsLive) {
             if (contactInfo) {
-                setDetailsOpen((open) => !open)
+                if (detailsOpen) {
+                    setDetailsOpen(false)
+                    // Back to messages only when focus is actually there;
+                    // a focus the user moved elsewhere is left alone.
+                    if (focused === "details") setFocus("main")
+                } else {
+                    setDetailsOpen(true)
+                    setFocus("details")
+                }
             }
             return
         }
@@ -156,6 +174,12 @@ export default memo(function App() {
             return
         }
         if (key.tab) {
+            // A text field being edited anywhere wins over focus-cycling:
+            // otherwise Tab strands an editing session live in the background
+            // (double-handled keystrokes on return). The composer is custom
+            // input (never edit-mode), so its cycling is unaffected, and
+            // modals block outright via useBlockingModal.
+            if (isEditingText() || isBlocked()) return
             setFocus(prev => {
                 if (prev === "sidebar") return "main"
                 if (prev === "main") return detailsOpen ? "details" : "textbox"
@@ -169,6 +193,22 @@ export default memo(function App() {
     const closeModal = () => {
         setShowModal(false)
         setView(modalReturnView)
+    }
+
+    // Focus saved across fullscreen members/nicks views (which unmount the
+    // whole chat column): restored on return so focus never points nowhere.
+    const focusBeforeModal = useRef<Focus>("main")
+    const openMembersView = () => {
+        focusBeforeModal.current = focused
+        setView("members")
+    }
+    const openNicksView = () => {
+        focusBeforeModal.current = focused
+        setView("nicks")
+    }
+    const closeMembersView = () => {
+        setView("chat")
+        setFocus(focusBeforeModal.current)
     }
 
     const openBrowserChat = (peerId: string, alias: string | null) => {
@@ -226,11 +266,11 @@ export default memo(function App() {
                     </Box>
                 ) : view === "members" && contactInfo ? (
                     <Box width={size.cols} height={size.rows} justifyContent="center" alignItems="center" flexDirection="column">
-                        <GroupMembersModal groupId={groupIdFromThreadKey(contactInfo.peerId) ?? ""} onClose={() => setView("chat")} />
+                        <GroupMembersModal groupId={groupIdFromThreadKey(contactInfo.peerId) ?? ""} onClose={closeMembersView} />
                     </Box>
                 ) : view === "nicks" && contactInfo ? (
                     <Box width={size.cols} height={size.rows} justifyContent="center" alignItems="center" flexDirection="column">
-                        <GroupNicksModal groupId={groupIdFromThreadKey(contactInfo.peerId) ?? ""} onClose={() => setView("chat")} />
+                        <GroupNicksModal groupId={groupIdFromThreadKey(contactInfo.peerId) ?? ""} onClose={closeMembersView} />
                     </Box>
                 ) : (
                     <Box width={size.cols} height={size.rows} alignItems="center" flexDirection="column">
@@ -243,14 +283,15 @@ export default memo(function App() {
                             <MessagesBox focused={focused === "main"} contactInfo={contactInfo} availableHeight={availableHeight}/>
                             {detailsOpen && contactInfo ? (
                                 <DetailsPane
+                                    key={contactInfo.peerId}
                                     threadKey={contactInfo.peerId}
                                     focused={focused === "details"}
                                     onClose={() => {
                                         setDetailsOpen(false)
-                                        setFocus("main")
+                                        if (focused === "details") setFocus("main")
                                     }}
-                                    onOpenMembers={() => setView("members")}
-                                    onOpenNicks={() => setView("nicks")}
+                                    onOpenMembers={openMembersView}
+                                    onOpenNicks={openNicksView}
                                     setContactInfo={setContactInfo}
                                 />
                             ) : null}

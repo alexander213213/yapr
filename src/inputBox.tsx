@@ -1,6 +1,7 @@
 import { Box, Text, useInput } from "ink";
 import { memo, useState } from "react";
 import { getTheme } from "./themes.js";
+import { isBlocked } from "./editMode.js";
 import {
   cursorPosition,
   emptyEditor,
@@ -32,6 +33,9 @@ export default memo(function ChatInput({
 
   useInput((input, key) => {
     if (!focused) return;
+    // Same gate as every other chat-column handler: a blocking modal owns
+    // the screen (no-op today — kept so a future overlay can't double-fire).
+    if (isBlocked()) return;
     if (key.tab) return;
     if (key.return && !key.shift) {
       if (draft.text.trim()) {
