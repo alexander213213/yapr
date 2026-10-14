@@ -18,6 +18,7 @@ const {
   clearSession,
   closeChat,
   deleteContact,
+  displayNameFor,
   findContact,
   getAllContacts,
   getGroupEarliestCreatedAt,
@@ -25,14 +26,17 @@ const {
   getOpenChats,
   getSessionUser,
   getSetting,
+  getSharedNick,
   getUnreadCounts,
   insertIncomingMessage,
   insertPendingMessage,
   markInboundMessageRead,
   markThreadRead,
+  mergeSharedNick,
   openChat,
   saveSessionUser,
   setSetting,
+  setSharedNick,
 } = await import("./store.js");
 
 describe("store threads", () => {
@@ -179,5 +183,45 @@ describe("history backfill queries", () => {
     expect(getUnreadCounts()[peer]).toBe(2);
     markInboundMessageRead(`bk-1-${UID}`);
     expect(getUnreadCounts()[peer]).toBe(1);
+  });
+});
+
+describe("shared nicknames", () => {
+  it("merges last-write-wins with first-seen ties", () => {
+    expect(mergeSharedNick(null, { nick: "A", updatedAt: 100 })).toEqual({
+      nick: "A",
+      updatedAt: 100,
+    });
+    expect(
+      mergeSharedNick({ nick: "A", updatedAt: 100 }, { nick: "B", updatedAt: 200 })
+    ).toEqual({ nick: "B", updatedAt: 200 });
+    // Stale loses, ties keep first-seen.
+    expect(
+      mergeSharedNick({ nick: "B", updatedAt: 200 }, { nick: "A", updatedAt: 100 })
+    ).toEqual({ nick: "B", updatedAt: 200 });
+    expect(
+      mergeSharedNick({ nick: "B", updatedAt: 200 }, { nick: "C", updatedAt: 200 })
+    ).toEqual({ nick: "B", updatedAt: 200 });
+  });
+
+  it("round-trips rows including tombstones", () => {
+    const g = `sn-${UID}`;
+    expect(getSharedNick(g, "u1")).toBeNull();
+    setSharedNick(g, "u1", "Al", 1000);
+    expect(getSharedNick(g, "u1")).toEqual({ nick: "Al", updatedAt: 1000 });
+    setSharedNick(g, "u1", null, 2000);
+    expect(getSharedNick(g, "u1")).toEqual({ nick: null, updatedAt: 2000 });
+  });
+
+  it("prefers shared master over advertised nicks, pets over everything", () => {
+    const g = `dn-${UID}`;
+    // Advertised fallback when nothing stored.
+    expect(displayNameFor(g, "u1", "Adv")).toBe("Adv");
+    // Shared master beats advertised.
+    setSharedNick(g, "u1", "Shared", 1000);
+    expect(displayNameFor(g, "u1", "Adv")).toBe("Shared");
+    // Tombstone falls back through.
+    setSharedNick(g, "u1", null, 2000);
+    expect(displayNameFor(g, "u1", "Adv")).toBe("Adv");
   });
 });

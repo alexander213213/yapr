@@ -101,6 +101,14 @@ db.exec(`
     PRIMARY KEY (group_id, user_id)
   );
 
+  CREATE TABLE IF NOT EXISTS shared_nicks (
+    group_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    nick TEXT,
+    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000),
+    PRIMARY KEY (group_id, user_id)
+  );
+
   CREATE TABLE IF NOT EXISTS message_reads (
     message_id TEXT NOT NULL,
     reader_id TEXT NOT NULL,

@@ -105,9 +105,11 @@ export function removeMemberRequest(groupId: string, userId: string): RemoveMemb
   return { v: 2, type: "remove_member", groupId, userId };
 }
 
-export type LeaveGroupRequest = { v: 2; type: "leave_group"; groupId: string };
-export function leaveGroupRequest(groupId: string): LeaveGroupRequest {
-  return { v: 2, type: "leave_group", groupId };
+export type LeaveGroupRequest = { v: 2; type: "leave_group"; groupId: string; heir?: string };
+export function leaveGroupRequest(groupId: string, heir?: string): LeaveGroupRequest {
+  const req: LeaveGroupRequest = { v: 2, type: "leave_group", groupId };
+  if (heir !== undefined) req.heir = heir;
+  return req;
 }
 
 export type RenameGroupRequest = { v: 2; type: "rename_group"; groupId: string; name: string };

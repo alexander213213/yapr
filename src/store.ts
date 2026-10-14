@@ -193,6 +193,24 @@ const deleteGroupNicksStmt = db.prepare(`
     DELETE FROM member_nicks WHERE group_id = ?
 `);
 
+const getSharedNickStmt = db.prepare(`
+    SELECT nick, updated_at FROM shared_nicks WHERE group_id = ? AND user_id = ?
+`);
+
+const setSharedNickStmt = db.prepare(`
+    INSERT INTO shared_nicks (group_id, user_id, nick, updated_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT (group_id, user_id) DO UPDATE SET nick = excluded.nick, updated_at = excluded.updated_at
+`);
+
+const deleteSharedNicksStmt = db.prepare(`
+    DELETE FROM shared_nicks WHERE group_id = ?
+`);
+
+const listSharedNicksStmt = db.prepare(`
+    SELECT user_id, nick, updated_at FROM shared_nicks WHERE group_id = ?
+`);
+
 export type GroupRow = { group_id: string; name: string; updated_at: number };
 export type GroupMemberRow = { user_id: string; role: string; joined_at: number };
 export type GroupThread = { groupId: string; name: string; members: GroupMemberRow[] };
@@ -224,6 +242,7 @@ export function dropGroupCache(groupId: string): void {
   deleteGroupMembersStmt.run(groupId);
   deleteGroupStmt.run(groupId);
   deleteGroupNicksStmt.run(groupId);
+  deleteSharedNicksStmt.run(groupId);
 }
 
 export function getGroupCache(groupId: string): GroupThread | undefined {
@@ -266,6 +285,53 @@ export function getMemberNick(groupId: string, userId: string): string | null {
   return row?.nick ?? null;
 }
 
+export type SharedNickRow = { nick: string | null; updatedAt: number };
+
+/**
+ * Last-write-wins merge for the centralized nickname record. Accept an
+ * incoming row only when strictly newer; ties keep first-seen (deterministic
+ * across members without clock trust). Pure: unit-tested.
+ */
+export function mergeSharedNick(
+  current: SharedNickRow | null,
+  incoming: SharedNickRow
+): SharedNickRow | null {
+  if (!current || incoming.updatedAt > current.updatedAt) return incoming;
+  return current;
+}
+
+/** Read the shared (admin-merged) nickname, if any. Null nick = tombstone. */
+export function getSharedNick(groupId: string, userId: string): SharedNickRow | null {
+  const row = getSharedNickStmt.get(groupId, userId) as
+    | { nick: string | null; updated_at: number }
+    | undefined;
+  if (!row) return null;
+  return { nick: row.nick, updatedAt: row.updated_at };
+}
+
+/** Write a shared nickname row ( merged result or tombstone with nick null). */
+export function setSharedNick(
+  groupId: string,
+  userId: string,
+  nick: string | null,
+  updatedAt: number
+): void {
+  setSharedNickStmt.run(groupId, userId, nick, updatedAt);
+}
+
+/** All shared nickname rows for snapshot handover. */
+export function getSharedNicks(
+  groupId: string
+): { userId: string; nick: string | null; updatedAt: number }[] {
+  return (
+    listSharedNicksStmt.all(groupId) as {
+      user_id: string;
+      nick: string | null;
+      updated_at: number;
+    }[]
+  ).map((r) => ({ userId: r.user_id, nick: r.nick, updatedAt: r.updated_at }));
+}
+
 /**
  * Nickname to advertise in envelopes for a context: per-group override wins,
  * then the default nickname when its reveal toggle for that context is on.
@@ -281,7 +347,7 @@ export function nickForContext(groupId: string | null, ownId: string): string {
   return "";
 }
 
-/** Resolve what to display for a sender: pet override, advertised nick, alias, id. */
+/** Resolve what to display for a sender: pet override, shared record, advertised nick, alias, id. */
 export function displayNameFor(
   groupId: string | null,
   senderId: string,
@@ -290,6 +356,8 @@ export function displayNameFor(
   if (groupId) {
     const pet = getMemberNick(groupId, senderId);
     if (pet) return pet;
+    const shared = getSharedNick(groupId, senderId)?.nick;
+    if (shared) return shared;
   }
   if (advertisedNick) return advertisedNick;
   return findContact(senderId)?.alias ?? senderId;

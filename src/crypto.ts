@@ -118,11 +118,64 @@ export type ForwardBlock = {
 };
 
 export type OpenResult =
-  | { ok: true; text: string; nick: string; fwd: ForwardBlock | null }
+  | { ok: true; text: string; nick: string; fwd: ForwardBlock | null; kind: NickPayload | null }
   | { ok: false };
 
-function encodePayload(nick: string, text: string, fwd?: ForwardBlock): string {
-  return JSON.stringify({ v: PAYLOAD_VERSION, nick, text, ...(fwd ? { fwd } : {}) });
+/**
+ * Machine frames tunneled inside normal E2EE sends (no new frame types, no
+ * server changes): nickname proposals/updates/snapshots for centralized
+ * nicknames. `v` stays 1: old readers ignore the unknown key and display the
+ * (empty) text as usual. Receivers route by kind instead of filing chat.
+ */
+export type NickPayload =
+  | { kind: "nick-proposal"; target: string; nick: string | null; updatedAt: number }
+  | { kind: "nick-update"; target: string; nick: string | null; updatedAt: number }
+  | {
+      kind: "nick-snapshot";
+      nicks: { userId: string; nick: string | null; updatedAt: number }[];
+    };
+
+function validNickPayload(value: unknown): NickPayload | null {
+  if (typeof value !== "object" || value === null) return null;
+  const o = value as Record<string, unknown>;
+  if (o.kind === "nick-proposal" || o.kind === "nick-update") {
+    if (typeof o.target !== "string" || o.target.length < 1 || o.target.length > 64) return null;
+    if (!validNickValue(o.nick)) return null;
+    if (!validTimestamp(o.updatedAt)) return null;
+    return { kind: o.kind, target: o.target, nick: o.nick, updatedAt: o.updatedAt };
+  }
+  if (o.kind === "nick-snapshot") {
+    if (!Array.isArray(o.nicks) || o.nicks.length > 50) return null;
+    const nicks: { userId: string; nick: string | null; updatedAt: number }[] = [];
+    for (const entry of o.nicks) {
+      if (typeof entry !== "object" || entry === null) return null;
+      const e = entry as Record<string, unknown>;
+      if (typeof e.userId !== "string" || e.userId.length < 1 || e.userId.length > 64) return null;
+      if (!validNickValue(e.nick)) return null;
+      if (!validTimestamp(e.updatedAt)) return null;
+      nicks.push({ userId: e.userId, nick: e.nick, updatedAt: e.updatedAt });
+    }
+    return { kind: "nick-snapshot", nicks };
+  }
+  return null;
+}
+
+function validNickValue(value: unknown): value is string | null {
+  return value === null || (typeof value === "string" && value.length <= 64);
+}
+
+function validTimestamp(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+function encodePayload(nick: string, text: string, fwd?: ForwardBlock, kind?: NickPayload): string {
+  return JSON.stringify({
+    v: PAYLOAD_VERSION,
+    nick,
+    text,
+    ...(fwd ? { fwd } : {}),
+    ...(kind ? { kind } : {}),
+  });
 }
 
 function validForwardBlock(value: unknown): ForwardBlock | null {
@@ -139,24 +192,30 @@ function validForwardBlock(value: unknown): ForwardBlock | null {
   return { id: o.id, from: o.from, nick: o.nick, sentAt: o.sentAt };
 }
 
-/** Decode a payload, accepting both current `{v,nick,text,fwd?}` and legacy raw text. */
-function decodePayload(plaintext: string): { text: string; nick: string; fwd: ForwardBlock | null } {
+/** Decode a payload, accepting both current `{v,nick,text,fwd?,kind?}` and legacy raw text. */
+function decodePayload(plaintext: string): {
+  text: string;
+  nick: string;
+  fwd: ForwardBlock | null;
+  kind: NickPayload | null;
+} {
   try {
     const parsed: unknown = JSON.parse(plaintext);
     if (typeof parsed === "object" && parsed !== null) {
-      const obj = parsed as { v?: unknown; nick?: unknown; text?: unknown; fwd?: unknown };
+      const obj = parsed as { v?: unknown; nick?: unknown; text?: unknown; fwd?: unknown; kind?: unknown };
       if (obj.v === PAYLOAD_VERSION) {
         return {
           text: typeof obj.text === "string" ? obj.text : plaintext,
           nick: typeof obj.nick === "string" ? obj.nick : "",
           fwd: validForwardBlock(obj.fwd),
+          kind: validNickPayload(obj.kind),
         };
       }
     }
   } catch {
     // Not JSON: pre-nick raw-text envelope from an older client.
   }
-  return { text: plaintext, nick: "", fwd: null };
+  return { text: plaintext, nick: "", fwd: null, kind: null };
 }
 
 /**
@@ -170,7 +229,8 @@ export function sealText(
   recipientId: string,
   text: string,
   nick: string = "",
-  fwd?: ForwardBlock
+  fwd?: ForwardBlock,
+  kind?: NickPayload
 ): Envelope {
   const shared = crypto.diffieHellman({
     privateKey: loadPrivateKey(),
@@ -179,7 +239,7 @@ export function sealText(
   const nonce = crypto.randomBytes(GCM_NONCE_LEN);
   const key = deriveMessageKey(shared, nonce, senderId, recipientId);
   const cipher = crypto.createCipheriv("aes-256-gcm", key, nonce);
-  const payload = encodePayload(nick, text, fwd);
+  const payload = encodePayload(nick, text, fwd, kind);
   const ciphertext = Buffer.concat([cipher.update(payload, "utf8"), cipher.final()]);
   const sealed = Buffer.concat([ciphertext, cipher.getAuthTag()]);
   return { ciphertext: sealed.toString("base64"), nonce: nonce.toString("base64") };
@@ -193,6 +253,7 @@ function openLegacy(envelope: Envelope): OpenResult {
       text: Buffer.from(envelope.ciphertext, "base64").toString("utf8"),
       nick: "",
       fwd: null,
+      kind: null,
     };
   } catch {
     return { ok: false };
@@ -228,8 +289,8 @@ export function openEnvelope(
       decipher.update(sealed.subarray(0, sealed.length - GCM_TAG_LEN)),
       decipher.final(),
     ]).toString("utf8");
-    const { text, nick, fwd } = decodePayload(plaintext);
-    return { ok: true, text, nick, fwd };
+    const { text, nick, fwd, kind } = decodePayload(plaintext);
+    return { ok: true, text, nick, fwd, kind };
   } catch {
     return { ok: false };
   }
