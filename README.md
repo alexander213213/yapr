@@ -76,8 +76,8 @@ Keys (shortcuts stand down while typing in any text field, except `Tab`):
 - Composer: `Enter` sends, `Ctrl+J` inserts a newline (multiline drafts grow to 8 rows),
   `Shift+Enter` also inserts a newline on terminals that report it, `Backspace` erases,
   arrows move the cursor.
-- Details (`i`): `↑/↓` move, `Enter` runs the action, `y` confirms destructive ones,
-  `i`/`Esc` close.
+- Details (`i`): opens focused, `↑/↓` move, `Enter` runs the action, `y` confirms destructive ones,
+  `i`/`Esc` close and return focus to messages.
 - Contacts (`c`): `Enter` chat/add, `e` rename, `d` delete (`y` confirms), `a` add,
   `/` starts filtering (plain keys act otherwise), `Backspace` edits the filter,
   `Esc` clears the filter, then goes back.
@@ -88,8 +88,10 @@ Keys (shortcuts stand down while typing in any text field, except `Tab`):
   history, contacts and identity key are kept; re-share the ID afterwards.
 - Group create (`g`): name first (`Enter` continues, `Esc` cancels), then members
   (`Enter` adds, `Ctrl+A` adds a raw ID, `Tab` creates, `Esc` back).
-- Group members/details views: `a` add (admin), `d` remove with `y` to confirm
-  (admin), `Enter` edits a nickname in the nicks view, `Esc` goes back.
+- Group members/details views: `a` add (admin, `Ctrl+A` for a raw ID),
+  `d` remove with `y` to confirm (admin), `Enter` edits a nickname in the
+  nicks view, `Esc` goes back. The sidebar highlight always follows the open
+  chat; deleting/closing falls back to it.
 - History for newcomers arrives automatically and silently (no prompt): the
   oldest online member's client shares the missing window; a quiet line notes
   what landed.

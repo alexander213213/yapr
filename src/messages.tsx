@@ -77,6 +77,14 @@ export default memo(function MessagesBox({ focused, contactInfo, availableHeight
     const threadKey = contactInfo?.peerId
     const threadGroupId = threadKey ? groupIdFromThreadKey(threadKey) : null
 
+    // Stable mirror for async send continuations: a send emitted during a
+    // thread switch must stamp the thread active at send time, never the
+    // list showing when its promise resolves (App's contactRef pattern).
+    const threadKeyRef = useRef(threadKey)
+    threadKeyRef.current = threadKey
+    const threadGroupIdRef = useRef(threadGroupId)
+    threadGroupIdRef.current = threadGroupId
+
     useEffect(() => {
         if (!threadKey) return
         setMessages(threadGroupId ? getGroupMessages(threadGroupId) : getAllMessagesByPeerId(threadKey))
@@ -111,41 +119,47 @@ export default memo(function MessagesBox({ focused, contactInfo, availableHeight
         }
 
         prevMaxOffsetRef.current = maxOffset;
-    }, [bubbleLines.length]);
+    }, [bubbleLines.length, height]);
 
     useEffect(() => {
         if (!threadKey) return
         const sendHandler = async (msg: string) => {
+            // Stamp the thread active at SEND time: a stale subscription
+            // firing mid-switch defers to the fresh one (which shares the
+            // same refs), so the optimistic row can never land cross-thread.
+            const tk = threadKeyRef.current
+            const gid = threadGroupIdRef.current
+            if (!tk || tk !== threadKey) return
             const text = msg.trim()
             if (!text) return
-            if (threadGroupId) {
+            if (gid) {
                 const clientMessageId = randomUUID();
-                const { rowId } = insertPendingMessage(threadKey, text, clientMessageId, threadGroupId);
+                const { rowId } = insertPendingMessage(tk, text, clientMessageId, gid);
                 const optimistic: MessageRow = {
                     id: rowId,
                     client_message_id: clientMessageId,
                     direction: "out",
-                    peer_id: threadKey,
-                    group_id: threadGroupId,
+                    peer_id: tk,
+                    group_id: gid,
                     text,
                     status: "pending",
                     created_at: Date.now()
                 }
                 setMessages(prev => [...prev, optimistic])
                 try {
-                    await sendGroupText(threadGroupId, clientMessageId, text)
+                    await sendGroupText(gid, clientMessageId, text)
                 } catch {
                     // Row stays pending; the outbox flushes it on reconnect.
                 }
                 return
             }
-            const { rowId, clientMessageId } = insertPendingMessage(threadKey, text)
+            const { rowId, clientMessageId } = insertPendingMessage(tk, text)
 
             const optimistic: MessageRow = {
                 id: rowId,
                 client_message_id: clientMessageId,
                 direction: "out",
-                peer_id: threadKey,
+                peer_id: tk,
                 text,
                 status: "pending",
                 created_at: Date.now()
@@ -154,7 +168,7 @@ export default memo(function MessagesBox({ focused, contactInfo, availableHeight
             setMessages(prev => [...prev, optimistic])
 
             try {
-                await sendChatText(threadKey, clientMessageId, text)
+                await sendChatText(tk, clientMessageId, text)
             } catch {
                 // Row stays pending; the outbox flushes it on reconnect.
             }
@@ -433,7 +447,11 @@ export function messagesToLines(message: MessageRow, maxWidth: number, threadGro
                         : null,
                 readers:
                     message.direction === "out" && threadGroupId && message.message_id
-                        ? readersForMessage(message.message_id)
+                        // Seen-by shows names, never bare ids: same resolution
+                        // as sender headers (pet override, advertised, alias).
+                        ? readersForMessage(message.message_id).map((r) =>
+                            displayNameFor(threadGroupId, r, null)
+                          )
                         : [],
                 longest: longest,
                 lineIndex: index

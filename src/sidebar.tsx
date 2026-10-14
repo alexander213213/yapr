@@ -68,6 +68,30 @@ export default memo(function Sidebar({focused, openPeerId, setContactInfo, onOpe
     }, [])
 
     const items = useMemo(() => toItems(threads), [threads])
+    const prevOpenPeerId = useRef(openPeerId)
+
+    const syncHighlightToOpen = () => {
+        const match = openPeerId ? items.find((item) => item.value === openPeerId) : undefined
+        setItemFocused(match ?? items.find((item) => item.value !== "::contacts") ?? items[0])
+    }
+
+    // Highlight always reflects the displayed chat: on thread switch, snap to
+    // the open row (falling back to the first thread, then Contacts). Refresh
+    // alone never yanks the highlight — arrow navigation survives incoming
+    // messages. Session reset clears openPeerId, which is the only full reset.
+    useEffect(() => {
+        if (prevOpenPeerId.current === openPeerId) return
+        prevOpenPeerId.current = openPeerId
+        syncHighlightToOpen()
+    })
+
+    // SelectInput only takes its start index at mount (internal state after),
+    // so remount per open thread to land the highlight on the displayed chat.
+    const openIndex = (() => {
+        if (!openPeerId) return 0
+        const idx = items.findIndex((item) => item.value === openPeerId)
+        return idx >= 0 ? idx : 0
+    })()
 
     useEffect(() => {
         if (didInitialSelect.current) return
@@ -96,7 +120,9 @@ export default memo(function Sidebar({focused, openPeerId, setContactInfo, onOpe
                 if (openPeerId === removed) {
                     setContactInfo(undefined)
                 }
-                setItemFocused(undefined)
+                // Fall back to the displayed chat (or first row); the resync
+                // effect corrects further once the parent re-renders.
+                syncHighlightToOpen()
                 socketBus.emit("chats_changed")
             }
             setConfirmDelete(undefined)
@@ -125,7 +151,7 @@ export default memo(function Sidebar({focused, openPeerId, setContactInfo, onOpe
             if (openPeerId === closed) {
                 setContactInfo(undefined)
             }
-            setItemFocused(undefined)
+            syncHighlightToOpen()
             socketBus.emit("chats_changed")
             return
         }
@@ -144,7 +170,7 @@ export default memo(function Sidebar({focused, openPeerId, setContactInfo, onOpe
 
     return (
         <Box width={"20%"} borderColor={focused ? theme.roles.borderFocused : theme.roles.borderDim} borderStyle={"round"}>
-            <SelectInput isFocused={focused} items={items} onSelect={onSelect} onHighlight={(item) => setItemFocused(item)} indicatorComponent={ThemedIndicator} itemComponent={ThemedItem}></SelectInput>
+            <SelectInput key={openPeerId ?? "none"} initialIndex={openIndex} isFocused={focused} items={items} onSelect={onSelect} onHighlight={(item) => setItemFocused(item)} indicatorComponent={ThemedIndicator} itemComponent={ThemedItem}></SelectInput>
         </Box>
     )
 })

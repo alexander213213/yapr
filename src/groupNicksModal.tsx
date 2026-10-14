@@ -1,8 +1,9 @@
 import { Box, Text, useInput } from "ink";
 import TextInput from "ink-text-input";
-import { memo, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { getTheme } from "./themes.js";
 import { useEditMode } from "./editMode.js";
+import { socketBus } from "./eventStore.js";
 import {
   displayNameFor,
   getGroupCache,
@@ -34,6 +35,16 @@ export default memo(function GroupNicksModal({
   const group = getGroupCache(groupId);
   const members = getGroupMembers(groupId);
   void membersVersion;
+
+  // Peer changes (admin edits, membership turnover) must reflect live,
+  // like the members modal.
+  useEffect(() => {
+    const refresh = () => setMembersVersion((v) => v + 1);
+    socketBus.on("groups_changed", refresh);
+    return () => {
+      socketBus.off("groups_changed", refresh);
+    };
+  }, []);
 
   const currentNick = (userId: string): string => getMemberNick(groupId, userId) ?? "";
 
@@ -76,7 +87,7 @@ export default memo(function GroupNicksModal({
   return (
     <Box width={"60%"} borderColor={theme.roles.borderFocused} borderStyle={"round"} flexDirection="column" paddingX={2} paddingY={1}>
       <Text bold>Nicknames in {group.name}</Text>
-      <Text dimColor>Enter edits · Esc back · blank clears</Text>
+      <Text dimColor>Enter edits · Esc stops editing, Esc again backs out · blank clears</Text>
       <Box marginTop={1} flexDirection="column">
         {members.map((m, i) => {
           const nick = currentNick(m.user_id);

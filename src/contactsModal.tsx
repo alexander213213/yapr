@@ -22,12 +22,16 @@ export default function ContactsModal(props: ContactsModalParams) {
     const [error, setError] = useState<string | undefined>()
     const theme = getTheme();
 
+    // Contact IDs anchor message history and can never change: in edit mode the
+    // ID field is display-only and focus cycles alias -> submit.
+    // Refresh from props when the target changes under an open modal.
+    const contact = mode === "edit" ? props.contactInfo : undefined;
     useEffect(() => {
-        if (mode === "edit") {
-            setAlias(props.contactInfo.alias)
-            setPeerId(props.contactInfo.peerId)
-        } 
-    }, [])
+        if (contact) {
+            setAlias(contact.alias)
+            setPeerId(contact.peerId)
+        }
+    }, [mode, contact])
 
     const changeFocus = () => {
         if (focus === "alias") {
@@ -93,19 +97,20 @@ export default function ContactsModal(props: ContactsModalParams) {
 
     return (
         <>
-        <Box width={"50%"} height={16} paddingX={3} paddingY={1} justifyContent="flex-start" alignItems="flex-start" flexDirection="column" borderColor={theme.roles.pending} borderStyle={"round"}>
+        <Box width={"50%"} paddingX={3} paddingY={1} justifyContent="flex-start" alignItems="flex-start" flexDirection="column" borderColor={theme.roles.pending} borderStyle={"round"}>
             <Box width={"100%"} justifyContent="space-between">
                 <Text>{mode === "add" ? "Add New Contact" : "Edit Contact"}</Text>
                 {error ? <Text>{error}</Text> : <Spacer></Spacer>}
             </Box>
+            <Text dimColor>Tab moves · Enter continues · Esc cancels</Text>
             <Box marginY={1} width={"100%"} paddingX={1} borderStyle={"round"} borderColor={focus === "alias" ? theme.roles.borderFocused : theme.roles.borderDim}>
                 <Text>Name: </Text>
-                <TextInput value={alias} onChange={setAlias} placeholder="Enter Contact Name" focus={focus === "alias"}></TextInput>
+                <TextInput value={alias} onChange={setAlias} placeholder="Enter Contact Name" focus={focus === "alias"} onSubmit={changeFocus}></TextInput>
             </Box>
             {idEditable ? (
             <Box width={"100%"} paddingX={1} borderStyle={"round"} borderColor={focus === "id" ? theme.roles.borderFocused : theme.roles.borderDim}>
                 <Text>ID: </Text>
-                <TextInput value={peerId} onChange={setPeerId} placeholder="Enter Contact ID" focus={focus === "id"}></TextInput>
+                <TextInput value={peerId} onChange={setPeerId} placeholder="Enter Contact ID" focus={focus === "id"} onSubmit={changeFocus}></TextInput>
             </Box>
             ) : (
             <Box width={"100%"} paddingX={1} borderStyle={"round"} borderColor={theme.roles.borderDim}>
@@ -114,7 +119,7 @@ export default function ContactsModal(props: ContactsModalParams) {
             </Box>
             )}
 
-            <Box width={"10%"} marginX={1} justifyContent="center" alignItems="center" alignSelf="flex-end" borderColor={focus === "submit" ? theme.roles.borderFocused : theme.roles.borderDim} borderStyle={"round"}>
+            <Box marginX={1} paddingX={2} justifyContent="center" alignItems="center" alignSelf="flex-end" borderColor={focus === "submit" ? theme.roles.borderFocused : theme.roles.borderDim} borderStyle={"round"}>
                 <Text>Submit</Text>
             </Box>
         </Box>
