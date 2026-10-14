@@ -135,7 +135,16 @@ class YaprClient {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private keysChain: Promise<void> = Promise.resolve();
   private keysWaiter: ((keys: Record<string, string>) => void) | null = null;
-  private groupsWaiter: ((groups: GroupsFrame) => void) | null = null;
+  // Membership snapshot waiters: a SET, not a slot. Overlapping refreshes
+  // (e.g. a group_updated broadcast landing mid-refresh — which creation
+  // always triggers) must all settle; a single slot lets the second request
+  // clobber the first, orphaning its promise past its own timeout. Snapshot
+  // reads are idempotent, so one answer resolves every pending waiter.
+  private groupsWaiters = new Set<{
+    resolve: (groups: GroupsFrame) => void;
+    reject: (err: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
   // Group creation resolves on group_created but must ALSO reject on error
   // frames: without this, a server rejection (rate limit, unknown member)
   // leaves the caller hanging until timeout with the error toast hidden
@@ -438,9 +447,15 @@ class YaprClient {
   }
 
   private resolveGroups(frame: GroupsFrame): void {
-    const waiter = this.groupsWaiter;
-    this.groupsWaiter = null;
-    if (waiter) waiter(frame);
+    // Fan-out: every pending refresh shares the latest snapshot. Late
+    // duplicates (a second answer to already-settled requests) find an
+    // empty set and drop.
+    const pending = [...this.groupsWaiters];
+    this.groupsWaiters.clear();
+    for (const waiter of pending) {
+      clearTimeout(waiter.timer);
+      waiter.resolve(frame);
+    }
   }
 
   private resolveGroupCreated(frame: GroupCreatedFrame): void {
@@ -468,19 +483,28 @@ class YaprClient {
   /** Pull the membership snapshot into the local cache. */
   async refreshGroups(): Promise<void> {
     if (!this.online) throw new Error("offline");
+    type GroupsEntry = {
+      resolve: (groups: GroupsFrame) => void;
+      reject: (err: Error) => void;
+      timer: ReturnType<typeof setTimeout>;
+    };
     const frame = await new Promise<GroupsFrame>((resolve, reject) => {
       if (!this.sendFrame(fetchGroupsRequest())) {
         reject(new Error("offline"));
         return;
       }
-      this.groupsWaiter = resolve;
+      // Own entry, own timer: a sibling settling first only removes its own
+      // entry, so overlapping refreshes can neither orphan nor double-settle
+      // each other.
+      let entry: GroupsEntry;
       const timer = setTimeout(() => {
-        if (this.groupsWaiter) {
-          this.groupsWaiter = null;
-          reject(new Error("groups lookup timed out"));
+        if (this.groupsWaiters.delete(entry)) {
+          entry.reject(new Error("groups lookup timed out"));
         }
       }, KEYS_TIMEOUT_MS);
       if (timer.unref) timer.unref();
+      entry = { resolve, reject, timer };
+      this.groupsWaiters.add(entry);
     });
     const seen = new Set<string>();
     const knownBefore = new Set(store.listGroupCache().map((g) => g.groupId));
