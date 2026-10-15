@@ -32,6 +32,9 @@ export type BusEvents = {
   nicks_changed: [];
   /** A backfill round landed (quiet thread refresh notice, not a toast). */
   history_sync: [msg: { groupId: string; count: number }];
+  /** Backfill round requested (waiting) vs gap settled (quiet). Held in the
+   *  header like the reclaim notice — a parked gap must never look idle. */
+  history_sync_state: [msg: { groupId: string; waiting: boolean }];
   /** Silent account-recovery outcome (persistent status line, not a toast). */
   reclaim_status: [msg: { ok: boolean; message: string }];
   /** Coded server error (log/toast; connection stays up). */
