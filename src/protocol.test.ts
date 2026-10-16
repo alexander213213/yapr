@@ -87,6 +87,19 @@ describe("request builders", () => {
       groupId: "g",
       count: 7,
     });
+    // Floor cursor rides along only when a real timestamp is served.
+    expect(shareHistoryDoneRequest("1", "g", 20, 1700000000000)).toMatchObject({
+      type: "share_history_done",
+      count: 20,
+      floor: 1700000000000,
+    });
+    expect(shareHistoryDoneRequest("1", "g", 0, null)).toEqual({
+      v: 2,
+      type: "share_history_done",
+      to: "1",
+      groupId: "g",
+      count: 0,
+    });
     expect(
       sendGroupRequest("g", "c", [{ to: "1", ciphertext: "Yw==", nonce: "bg==" }])
     ).toMatchObject({ v: 2, type: "send_group", groupId: "g" });
@@ -171,6 +184,17 @@ describe("parseServerFrame", () => {
     expect(
       parseServerFrame(`{"v":2,"type":"history_done","groupId":"g","count":7,"from":"u"}`)
     ).toMatchObject({ type: "history_done", count: 7 });
+    expect(
+      parseServerFrame(`{"v":2,"type":"history_done","groupId":"g","count":20,"from":"u","floor":1700000000000}`)
+    ).toMatchObject({ type: "history_done", count: 20, floor: 1700000000000 });
+    // Bad floors are rejected outright (string, negative, fractional).
+    for (const floor of [`"1700000000000"`, "-1", "1.5"]) {
+      expect(
+        parseServerFrame(
+          `{"v":2,"type":"history_done","groupId":"g","count":20,"from":"u","floor":${floor}}`
+        )
+      ).toBeNull();
+    }
     expect(
       parseServerFrame(
         `{"v":2,"type":"incoming","from":"a","messageId":"m","ciphertext":"Yy","nonce":"n","timestamp":1,"groupId":"g"}`

@@ -171,9 +171,23 @@ export type ShareHistoryDoneRequest = {
   to: string;
   groupId: string;
   count: number;
+  floor?: number;
 };
-export function shareHistoryDoneRequest(to: string, groupId: string, count: number): ShareHistoryDoneRequest {
-  return { v: 2, type: "share_history_done", to, groupId, count };
+/**
+ * Round-completion signal. `floor` (when a number) is the oldest created_at
+ * served this round — the requester's cursor for the next window, so walks
+ * advance through already-held rows. Omitted when nothing was served (or for
+ * legacy servers, which strip it anyway).
+ */
+export function shareHistoryDoneRequest(
+  to: string,
+  groupId: string,
+  count: number,
+  floor?: number | null
+): ShareHistoryDoneRequest {
+  const req: ShareHistoryDoneRequest = { v: 2, type: "share_history_done", to, groupId, count };
+  if (typeof floor === "number") req.floor = floor;
+  return req;
 }
 
 // --- server -> client parsers (validated; unknown frames rejected) ---
@@ -308,6 +322,9 @@ const HistoryDoneFrame = z.object({
   groupId: z.string().min(1).max(128),
   count: z.number().int().nonnegative(),
   from: userIdField,
+  // Cursor for the next window (oldest created_at served this round).
+  // Absent on legacy shares: the requester falls back to earliest-tightening.
+  floor: z.number().int().nonnegative().optional(),
 });
 export type HistoryDoneFrame = z.infer<typeof HistoryDoneFrame>;
 

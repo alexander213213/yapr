@@ -427,6 +427,10 @@ export const DEFAULT_SETTINGS = {
   // Internal (never shown in Settings UI): group ids with an unfinished
   // history backfill, so a restart mid-sync resumes instead of stalling.
   history_sync_pending: "[]",
+  // Internal (never shown in Settings UI): { [groupId]: joinedAt } for
+  // memberships whose full newest-to-floor walk finished, so reboots stay
+  // on cheap outer checks and only rejoins re-walk the interior.
+  history_full_sync: "{}",
 } as const;
 export type SettingKey = keyof typeof DEFAULT_SETTINGS;
 

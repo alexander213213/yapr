@@ -669,3 +669,313 @@ describe("history share piggybacks nick snapshot", () => {
     }
   });
 });
+
+describe("history floor cursor", () => {
+  type SyncState = {
+    total: number;
+    done: boolean;
+    inFlight: boolean;
+    lastActivityAt: number;
+    tried?: string[];
+    target?: string;
+    cursor?: number;
+    full?: boolean;
+  };
+  type Backdoor = {
+    dispatch: (f: { v: 2; type: string; [k: string]: unknown }) => void;
+    historySync: Map<string, SyncState>;
+    shareHistoryGap: (
+      groupId: string,
+      toUserId: string,
+      before: number,
+      limit: number
+    ) => Promise<{ count: number; floor: number | null }>;
+  };
+  const backdoor = () => client as unknown as Backdoor;
+  const withOnlineStubbedSender = (fn: (sent: unknown[]) => void) => {
+    const c = client as unknown as { state: string; sendFrame: (o: object) => boolean };
+    const prevState = c.state;
+    const prevSend = c.sendFrame.bind(client);
+    const sent: unknown[] = [];
+    c.state = "online";
+    c.sendFrame = (o: object) => { sent.push(o); return true; };
+    try {
+      fn(sent);
+    } finally {
+      c.state = prevState;
+      c.sendFrame = prevSend;
+    }
+  };
+
+  it("reports the oldest served timestamp as floor, null when nothing served", async () => {
+    const tag = Date.now();
+    const sharer = `sharer-fl-${tag}`;
+    const recip = `recip-fl-${tag}`;
+    const gid = `g-fl-${tag}`;
+    const recipPub = loadOrCreateIdentity().publicKeyB64;
+    store.clearSession();
+    store.saveSessionUser(sharer, "s3cret");
+    store.insertIncomingMessage(`o-fl-${tag}`, `fl-1-${tag}`, "one", 1000, gid);
+    store.insertIncomingMessage(`o-fl-${tag}`, `fl-2-${tag}`, "two", 2000, gid);
+    store.insertIncomingMessage(`o-fl-${tag}`, `fl-3-${tag}`, "three", 3000, gid);
+    const c = client as unknown as {
+      state: string;
+      sendFrame: (o: object) => boolean;
+      requestKeys: (ids: string[]) => Promise<Record<string, string>>;
+    };
+    const prevState = c.state;
+    const prevSend = c.sendFrame.bind(client);
+    const prevKeys = c.requestKeys.bind(client);
+    const sent: unknown[] = [];
+    c.state = "online";
+    c.sendFrame = (o: object) => { sent.push(o); return true; };
+    c.requestKeys = async () => ({ [recip]: recipPub });
+    try {
+      const full = await backdoor().shareHistoryGap(gid, recip, 9999, 20);
+      expect(full).toEqual({ count: 3, floor: 1000 });
+      const empty = await backdoor().shareHistoryGap(gid, recip, 500, 20);
+      expect(empty).toEqual({ count: 0, floor: null });
+    } finally {
+      c.state = prevState;
+      c.sendFrame = prevSend;
+      c.requestKeys = prevKeys;
+    }
+    const dones = sent.filter((f) => (f as { type?: string }).type === "share_history_done");
+    expect(dones).toHaveLength(2);
+    expect(dones[0]).toMatchObject({ groupId: gid, to: recip, count: 3, floor: 1000 });
+    expect(dones[1]).toMatchObject({ groupId: gid, to: recip, count: 0 });
+    // Empty windows omit the cursor entirely (legacy-compatible).
+    expect("floor" in (dones[1] as object)).toBe(false);
+  });
+
+  it("continues full walks from the sharer floor, not the local earliest", () => {
+    const tag = Date.now();
+    const gid = `g-flc-${tag}`;
+    store.insertIncomingMessage(`o-flc-${tag}`, `flc-old-${tag}`, "ancient", 100, gid);
+    const b = backdoor();
+    b.historySync.set(gid, {
+      total: 20,
+      done: false,
+      inFlight: true,
+      lastActivityAt: Date.now(),
+      cursor: 9000,
+      full: true,
+    });
+    try {
+      withOnlineStubbedSender((sent) => {
+        b.dispatch({ v: 2, type: "history_done", groupId: gid, count: 20, from: "u", floor: 5000 });
+        const reqs = sent.filter((f) => (f as { type?: string }).type === "request_history");
+        expect(reqs).toHaveLength(1);
+        // +1 keeps same-millisecond rows inclusive (window is created_at < before).
+        expect(reqs[0]).toMatchObject({ groupId: gid, before: 5001 });
+      });
+      expect(b.historySync.get(gid)).toMatchObject({
+        total: 40,
+        done: false,
+        inFlight: true,
+        cursor: 5001,
+        full: true,
+      });
+    } finally {
+      b.historySync.delete(gid);
+    }
+  });
+
+  it("settles a full walk without marker when the sharer predates cursors", () => {
+    const tag = Date.now();
+    const gid = `g-flnc-${tag}`;
+    const b = backdoor();
+    b.historySync.set(gid, {
+      total: 20,
+      done: false,
+      inFlight: true,
+      lastActivityAt: Date.now(),
+      cursor: 9000,
+      full: true,
+    });
+    try {
+      withOnlineStubbedSender((sent) => {
+        // Legacy done: full batch, no floor — must not loop the same window.
+        b.dispatch({ v: 2, type: "history_done", groupId: gid, count: 20, from: "u" });
+        expect(sent.filter((f) => (f as { type?: string }).type === "request_history")).toHaveLength(0);
+      });
+      expect(b.historySync.get(gid)).toMatchObject({ done: true });
+      expect(JSON.parse(store.getSetting("history_full_sync"))[gid]).toBeUndefined();
+    } finally {
+      b.historySync.delete(gid);
+    }
+  });
+});
+
+describe("history rejoin detection", () => {
+  type SyncState = {
+    total: number;
+    done: boolean;
+    inFlight: boolean;
+    lastActivityAt: number;
+    tried?: string[];
+    target?: string;
+    cursor?: number;
+    full?: boolean;
+  };
+  type Backdoor = {
+    dispatch: (f: { v: 2; type: string; [k: string]: unknown }) => void;
+    historySync: Map<string, SyncState>;
+    redriveHistorySync: () => void;
+  };
+  const backdoor = () => client as unknown as Backdoor;
+  const withOnlineStubbedSender = (fn: (sent: unknown[]) => void) => {
+    const c = client as unknown as { state: string; sendFrame: (o: object) => boolean };
+    const prevState = c.state;
+    const prevSend = c.sendFrame.bind(client);
+    const sent: unknown[] = [];
+    c.state = "online";
+    c.sendFrame = (o: object) => { sent.push(o); return true; };
+    try {
+      fn(sent);
+    } finally {
+      c.state = prevState;
+      c.sendFrame = prevSend;
+    }
+  };
+  const seedRejoiner = (tag: string) => {
+    const me = `req-rj-${tag}`;
+    const old = `old-rj-${tag}`;
+    const gid = `g-rj-${tag}`;
+    store.clearSession();
+    store.saveSessionUser(me, "s3cret");
+    store.upsertGroupCache(gid, "RJ", [
+      { user_id: old, role: "member", joined_at: 1000 },
+      { user_id: me, role: "member", joined_at: 3000 },
+    ]);
+    // Pre-leave first message + a post-rejoin one: the hole is between them.
+    store.insertIncomingMessage(old, `rj-first-${tag}`, "first", 2000, gid);
+    store.insertIncomingMessage(old, `rj-latest-${tag}`, "latest", 4000, gid);
+    return { me, gid };
+  };
+
+  it("walks newest-first with a cursor when rows predate the membership", () => {
+    const tag = `${Date.now()}`;
+    const { gid } = seedRejoiner(tag);
+    const b = backdoor();
+    try {
+      withOnlineStubbedSender((sent) => {
+        b.redriveHistorySync();
+        const reqs = sent.filter((f) => (f as { type?: string }).type === "request_history");
+        expect(reqs).toHaveLength(1);
+        // Newest-first, not earliest-tightened: the hole sits above earliest.
+        expect((reqs[0] as { before: number }).before).toBeGreaterThan(4000);
+        expect(reqs[0]).toMatchObject({ groupId: gid });
+      });
+      expect(b.historySync.get(gid)).toMatchObject({ full: true, done: false, inFlight: true });
+    } finally {
+      b.historySync.delete(gid);
+      store.dropGroupCache(gid);
+    }
+  });
+
+  it("stays on cheap outer checks once the marker matches the membership", () => {
+    const tag = `m${Date.now()}`;
+    const { gid } = seedRejoiner(tag);
+    store.setSetting("history_full_sync", JSON.stringify({ [gid]: 3000 }));
+    const b = backdoor();
+    try {
+      withOnlineStubbedSender((sent) => {
+        b.redriveHistorySync();
+        const reqs = sent.filter((f) => (f as { type?: string }).type === "request_history");
+        expect(reqs).toHaveLength(1);
+        // Outer window: rows older than the local earliest only.
+        expect(reqs[0]).toMatchObject({ groupId: gid, before: 2000 });
+      });
+      expect(b.historySync.get(gid)?.full).toBeFalsy();
+    } finally {
+      b.historySync.delete(gid);
+      store.dropGroupCache(gid);
+      const markers = JSON.parse(store.getSetting("history_full_sync"));
+      delete markers[gid];
+      store.setSetting("history_full_sync", JSON.stringify(markers));
+    }
+  });
+
+  it("records the marker on floor settles but never on cap settles", () => {
+    const tag = `s${Date.now()}`;
+    const me = `req-mk-${tag}`;
+    const old = `old-mk-${tag}`;
+    const gid = `g-mk-${tag}`;
+    store.clearSession();
+    store.saveSessionUser(me, "s3cret");
+    store.upsertGroupCache(gid, "MK", [
+      { user_id: old, role: "member", joined_at: 1000 },
+      { user_id: me, role: "member", joined_at: 3000 },
+    ]);
+    const b = backdoor();
+    try {
+      // Partial batch = floor reached: marker records this membership.
+      b.historySync.set(gid, { total: 3, done: false, inFlight: true, lastActivityAt: Date.now() });
+      b.dispatch({ v: 2, type: "history_done", groupId: gid, count: 3, from: old });
+      expect(b.historySync.get(gid)).toMatchObject({ done: true });
+      expect(JSON.parse(store.getSetting("history_full_sync"))[gid]).toBe(3000);
+      // Cap settle = coverage unknown: done, but no marker (reboot re-walks).
+      const gid2 = `g-mk2-${tag}`;
+      store.upsertGroupCache(gid2, "MK2", [
+        { user_id: old, role: "member", joined_at: 1000 },
+        { user_id: me, role: "member", joined_at: 3000 },
+      ]);
+      b.historySync.set(gid2, { total: 100, done: false, inFlight: true, lastActivityAt: Date.now() });
+      withOnlineStubbedSender((sent) => {
+        void sent;
+        b.dispatch({ v: 2, type: "history_done", groupId: gid2, count: 20, from: old });
+      });
+      expect(b.historySync.get(gid2)).toMatchObject({ done: true });
+      expect(JSON.parse(store.getSetting("history_full_sync"))[gid2]).toBeUndefined();
+      b.historySync.delete(gid2);
+      store.dropGroupCache(gid2);
+    } finally {
+      b.historySync.delete(gid);
+      store.dropGroupCache(gid);
+      const markers = JSON.parse(store.getSetting("history_full_sync"));
+      delete markers[gid];
+      store.setSetting("history_full_sync", JSON.stringify(markers));
+    }
+  });
+
+  it("resumes a stalled interior campaign at its cursor with a fresh election", () => {
+    const tag = `c${Date.now()}`;
+    const me = `req-rs-${tag}`;
+    const old = `old-rs-${tag}`;
+    const gid = `g-rs-${tag}`;
+    store.clearSession();
+    store.saveSessionUser(me, "s3cret");
+    store.upsertGroupCache(gid, "RS", [
+      { user_id: old, role: "member", joined_at: 1000 },
+      { user_id: me, role: "member", joined_at: 3000 },
+    ]);
+    store.insertIncomingMessage(old, `rs-first-${tag}`, "first", 2000, gid);
+    const b = backdoor();
+    // Stalled mid-walk with a dead target: the tick re-elects instead of
+    // retrying the ghost, keeping the cursor (not restarting from now).
+    b.historySync.set(gid, {
+      total: 20,
+      done: false,
+      inFlight: true,
+      lastActivityAt: Date.now() - 61_000,
+      cursor: 5000,
+      full: true,
+      target: `ghost-rs-${tag}`,
+      tried: [`ghost-rs-${tag}`],
+    });
+    try {
+      withOnlineStubbedSender((sent) => {
+        b.redriveHistorySync();
+        const reqs = sent.filter((f) => (f as { type?: string }).type === "request_history");
+        expect(reqs).toHaveLength(1);
+        expect(reqs[0]).toMatchObject({ groupId: gid, before: 5000 });
+        expect((reqs[0] as { to?: string }).to).toBeUndefined();
+      });
+      expect(b.historySync.get(gid)).toMatchObject({ full: true, cursor: 5000, done: false });
+    } finally {
+      b.historySync.delete(gid);
+      store.dropGroupCache(gid);
+    }
+  });
+});
