@@ -14,6 +14,7 @@ import {
   getSessionUser,
   getSharedNick,
   isGroupAdmin,
+  nickForContext,
   setMemberNick,
   setSharedNick,
 } from "./store.js";
@@ -23,6 +24,32 @@ export const NICK_MAX_GRAPHEMES = 16;
 
 export function truncateNick(value: string): string {
   return Array.from(value.trim()).slice(0, NICK_MAX_GRAPHEMES).join("");
+}
+
+export type NickRowLabel = { shown: string; tag: string };
+
+/**
+ * Effective row label for the nicknames list. Precedence: personal override,
+ * shared master, advertised name, contact alias, id. Self rows resolve the
+ * advertised slot through nickForContext (own override or default nick when
+ * sharing) because own messages file under the thread key, so the
+ * message-row lookup (getLatestAdvertisedNick) can never hit for self —
+ * without this everyone sees everyone else's name but never their own.
+ * Pure over the store: unit-tested.
+ */
+export function nickRowLabel(
+  groupId: string,
+  userId: string,
+  ownId: string | undefined
+): NickRowLabel {
+  const nick = getMemberNick(groupId, userId) ?? "";
+  const advertised =
+    userId === ownId
+      ? nickForContext(groupId, userId)
+      : getLatestAdvertisedNick(groupId, userId);
+  const shown = nick || displayNameFor(groupId, userId, advertised);
+  const tag = userId === ownId ? " (you)" : nick ? " (local)" : "";
+  return { shown, tag };
 }
 
 /**
@@ -145,13 +172,8 @@ export default memo(function GroupNicksModal({
       {nickError ? <Text color={theme.roles.error}>{nickError}</Text> : null}
       <Box marginTop={1} flexDirection="column">
         {members.map((m, i) => {
-          const nick = currentNick(m.user_id);
-          // Advertised fallback: rows show the name from the member's own
-          // messages when no pet/shared/alias exists, so the list never looks
-          // emptier than the chat itself.
-          const shown = nick || displayNameFor(groupId, m.user_id, getLatestAdvertisedNick(groupId, m.user_id));
-          const tag = m.user_id === ownId ? " (you)" : nick ? " (local)" : "";
-          const label = `${shown}${tag}`;
+          const row = nickRowLabel(groupId, m.user_id, ownId);
+          const label = `${row.shown}${row.tag}`;
           if (editing === m.user_id) {
             return (
               <Box key={m.user_id}>
