@@ -49,6 +49,10 @@ export default memo(function App() {
     // Quiet backfill notice: one transient line per completed round that
     // actually landed rows (auto-clears like the error toast below).
     const [syncNotice, setSyncNotice] = useState<string | undefined>()
+    // Backfill in flight: held while a gap is open with nothing landed yet
+    // (a ghost electee used to park this silently forever). Cleared when
+    // rows land or the gap settles.
+    const [syncWaiting, setSyncWaiting] = useState<{ groupId: string, text: string } | undefined>()
     const theme = getTheme();
     const availableHeight = size.rows - 1 - 3
 
@@ -87,8 +91,19 @@ export default memo(function App() {
         const onHistorySync = (msg: { groupId: string, count: number }) => {
             const name = getGroupCache(msg.groupId)?.name ?? "group";
             setSyncNotice(`Loaded ${msg.count} older messages in ${name}`)
+            // Rows are visibly arriving; further rounds announce themselves.
+            setSyncWaiting((prev) => (prev && prev.groupId === msg.groupId ? undefined : prev))
         }
         socketBus.on("history_sync", onHistorySync)
+        const onHistorySyncState = (msg: { groupId: string, waiting: boolean }) => {
+            if (msg.waiting) {
+                const name = getGroupCache(msg.groupId)?.name ?? "group";
+                setSyncWaiting({ groupId: msg.groupId, text: `Syncing older messages in ${name}…` })
+            } else {
+                setSyncWaiting((prev) => (prev && prev.groupId === msg.groupId ? undefined : prev))
+            }
+        }
+        socketBus.on("history_sync_state", onHistorySyncState)
         return () => {
             socketBus.off("identified", onIdentified)
             socketBus.off("connection", onConnection)
@@ -96,6 +111,7 @@ export default memo(function App() {
             socketBus.off("reclaim_status", onReclaimStatus)
             socketBus.off("connection_notice", onConnectionNotice)
             socketBus.off("history_sync", onHistorySync)
+            socketBus.off("history_sync_state", onHistorySyncState)
         }
     }, [])
 
@@ -297,6 +313,7 @@ export default memo(function App() {
                             ) : null}
                         </Box>
                         <ChatInput focused={focused === "textbox"} onSubmit={handleTextSubmit} />
+                        {syncWaiting ? <Text dimColor>{syncWaiting.text}</Text> : null}
                         {syncNotice ? <Text dimColor>{syncNotice}</Text> : null}
                     </Box>
                 )

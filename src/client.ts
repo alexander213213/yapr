@@ -97,6 +97,20 @@ const KEYS_TIMEOUT_MS = 10_000;
 const HISTORY_SYNC_ROUND_LIMIT = 20;
 const HISTORY_SYNC_MAX_TOTAL = 100;
 const HISTORY_SYNC_STALL_MS = 60_000;
+/** Re-drive tick: open gaps re-request on their own instead of waiting for
+ *  an unrelated membership refresh (a parked gap used to die quietly). */
+const HISTORY_SYNC_REDRIVE_MS = 30_000;
+
+/** Per-group backfill loop state. `tried`/`target` drive the fallback walk:
+ *  sharers that answered empty, and the explicitly targeted sharer, if any. */
+type HistorySyncState = {
+  total: number;
+  done: boolean;
+  inFlight: boolean;
+  lastActivityAt: number;
+  tried?: string[] | undefined;
+  target?: string | undefined;
+};
 
 /** Groups with an unfinished backfill (survives restarts via settings). */
 function getPendingHistorySync(): Set<string> {
@@ -162,10 +176,11 @@ class YaprClient {
   // Automatic history backfill per group. Stateless across restarts by design:
   // a repeat round after reboot simply re-resolves against current earliest
   // rows, and dedup absorbs overlaps. `done` stops all future rounds.
-  private historySync = new Map<
-    string,
-    { total: number; done: boolean; inFlight: boolean; lastActivityAt: number }
-  >();
+  private historySync = new Map<string, HistorySyncState>();
+  // Backfill re-drive: maybeSyncGroups otherwise runs only on membership
+  // refreshes, so a round killed by a momentary ghost (offline electee,
+  // lost done) parks forever. Started in start(), cleared in stop().
+  private syncTimer: NodeJS.Timeout | null = null;
   // Poisoned-history migration runs once per process (reconnects must not
   // re-wipe; the delete is idempotent anyway, but re-queueing would spam).
   private poisonMigrated = false;
@@ -176,11 +191,23 @@ class YaprClient {
 
   start(): void {
     this.stopped = false;
+    if (!this.syncTimer) {
+      this.syncTimer = setInterval(() => {
+        if (!this.stopped && this.online) {
+          this.redriveHistorySync();
+        }
+      }, HISTORY_SYNC_REDRIVE_MS);
+      if (this.syncTimer.unref) this.syncTimer.unref();
+    }
     this.connect();
   }
 
   stop(): void {
     this.stopped = true;
+    if (this.syncTimer) {
+      clearInterval(this.syncTimer);
+      this.syncTimer = null;
+    }
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -412,6 +439,13 @@ class YaprClient {
         this.onHistoryDone(frame);
         break;
       case "error":
+        if (frame.code === "OFFLINE") {
+          // Most often a history election with nobody electable (or a
+          // targeted share at a departed member): unpark open gaps so the
+          // re-drive timer retries instead of stalling to the next refresh.
+          // Done/cap/tried state is kept; a redundant round is dedup-safe.
+          this.unparkHistorySync();
+        }
         // A pending group creation must fail fast with the server's message
         // (surfaced inline by the modal) instead of hanging to timeout.
         // The toast still emits for every other consumer.
@@ -747,10 +781,44 @@ class YaprClient {
     const before = frame.before ?? Date.now();
     const limit = frame.limit ?? HISTORY_SYNC_ROUND_LIMIT;
     await this.shareHistoryGap(frame.groupId, frame.requester, before, limit);
+    // Piggyback the nickname master: newcomers otherwise miss every nick
+    // set before they joined (updates only fan out to current members).
+    // Unconditional — even an empty window carries it — and LWW merge makes
+    // repeats harmless. Best effort: failure must not disturb the done
+    // signal already sent above.
+    try {
+      await this.sendNickSnapshot(frame.groupId, frame.requester);
+    } catch {
+      // The next served round re-sends; live updates heal it meanwhile.
+    }
   }
 
-  /** Request one backfill round for a group. Completion arrives via history_done. */
-  requestHistoryGap(groupId: string): void {
+  /** Clear in-flight marks after a failure so the re-drive timer retries. */
+  private unparkHistorySync(): void {
+    const now = Date.now();
+    for (const st of this.historySync.values()) {
+      if (!st.done && st.inFlight) {
+        st.inFlight = false;
+        st.lastActivityAt = now;
+      }
+    }
+  }
+
+  /** Periodic tick: re-evaluate open gaps (stalled rounds retry on their own). */
+  private redriveHistorySync(): void {
+    try {
+      this.maybeSyncGroups();
+    } catch {
+      // Best effort; the next tick retries.
+    }
+  }
+
+  /**
+   * Request one backfill round for a group. Completion arrives via
+   * history_done. Absent `to` = automatic mode (server elects); a `to`
+   * targets one member explicitly (fallback walk — same server path).
+   */
+  requestHistoryGap(groupId: string, to?: string): void {
     if (!this.online) return;
     const st = this.historySync.get(groupId) ?? {
       total: 0,
@@ -761,13 +829,15 @@ class YaprClient {
     if (st.done || st.inFlight || st.total >= HISTORY_SYNC_MAX_TOTAL) return;
     st.inFlight = true;
     st.lastActivityAt = Date.now();
+    st.target = to;
     this.historySync.set(groupId, st);
     const pending = getPendingHistorySync();
     pending.add(groupId);
     setPendingHistorySync(pending);
     const earliest = store.getGroupEarliestCreatedAt(groupId);
+    socketBus.emit("history_sync_state", { groupId, waiting: true });
     this.sendFrame(
-      requestHistoryRequest(groupId, undefined, earliest ?? Date.now(), HISTORY_SYNC_ROUND_LIMIT)
+      requestHistoryRequest(groupId, to, earliest ?? Date.now(), HISTORY_SYNC_ROUND_LIMIT)
     );
   }
 
@@ -813,7 +883,10 @@ class YaprClient {
           done: true,
           inFlight: false,
           lastActivityAt: now,
+          tried: st?.tried,
+          target: st?.target,
         });
+        socketBus.emit("history_sync_state", { groupId: g.groupId, waiting: false });
         continue;
       }
       const members = store.getGroupMembers(g.groupId);
@@ -829,7 +902,10 @@ class YaprClient {
           done: true,
           inFlight: false,
           lastActivityAt: now,
+          tried: st?.tried,
+          target: st?.target,
         });
+        socketBus.emit("history_sync_state", { groupId: g.groupId, waiting: false });
         continue;
       }
       this.requestHistoryGap(g.groupId);
@@ -847,23 +923,55 @@ class YaprClient {
     st.inFlight = false;
     st.lastActivityAt = now;
     st.total += frame.count;
+    const tried = st.tried ?? [];
+    if (frame.from && !tried.includes(frame.from)) tried.push(frame.from);
+    st.tried = tried;
     if (frame.count > 0) {
+      // Progress: the serving path works, so future stalls start the
+      // fallback walk from scratch.
+      st.tried = [];
       socketBus.emit("history_sync", { groupId: frame.groupId, count: frame.count });
       // Silent thread refresh: rows arrived read-marked, so no badges bump.
       socketBus.emit("chats_changed");
     }
     if (frame.count === HISTORY_SYNC_ROUND_LIMIT && st.total < HISTORY_SYNC_MAX_TOTAL) {
       // Full batch: the gap runs deeper. The next round re-reads the current
-      // earliest row, so the window always tightens.
+      // earliest row, so the window always tightens. A targeted round stays
+      // targeted: the serving sharer just proved depth.
       this.historySync.set(frame.groupId, st);
-      this.requestHistoryGap(frame.groupId);
+      this.requestHistoryGap(frame.groupId, st.target);
+    } else if (frame.count === 0) {
+      // Floor claimed — but possibly by a ghost electee holding nothing.
+      // Walk the tenure order past already-tried sharers before believing it.
+      const next = this.nextUntriedSharer(frame.groupId, tried);
+      if (next) {
+        this.historySync.set(frame.groupId, st);
+        this.requestHistoryGap(frame.groupId, next);
+      } else {
+        this.settleHistorySync(frame.groupId, st);
+      }
     } else {
-      st.done = true;
-      this.historySync.set(frame.groupId, st);
-      const pending = getPendingHistorySync();
-      pending.delete(frame.groupId);
-      setPendingHistorySync(pending);
+      this.settleHistorySync(frame.groupId, st);
     }
+  }
+
+  /** Oldest member (tenure order) that is neither us nor already tried. */
+  private nextUntriedSharer(groupId: string, tried: string[]): string | undefined {
+    const me = store.getSessionUser()?.user_id;
+    for (const m of store.getGroupMembers(groupId)) {
+      if (m.user_id !== me && !tried.includes(m.user_id)) return m.user_id;
+    }
+    return undefined;
+  }
+
+  /** Close a gap: mark done, drop the pending flag, clear any waiting UI. */
+  private settleHistorySync(groupId: string, st: HistorySyncState): void {
+    st.done = true;
+    this.historySync.set(groupId, st);
+    const pending = getPendingHistorySync();
+    pending.delete(groupId);
+    setPendingHistorySync(pending);
+    socketBus.emit("history_sync_state", { groupId, waiting: false });
   }
 
   async createGroup(name: string, memberIds: string[]): Promise<string> {

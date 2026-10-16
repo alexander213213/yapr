@@ -12,7 +12,7 @@ process.env.YAPR_DATA_DIR = TEST_DIR;
 const { resolveEndpoint, resolveTlsOptions, DEFAULT_HOST, DEFAULT_PORT, client } = await import("./client.js");
 const { socketBus } = await import("./eventStore.js");
 const store = await import("./store.js");
-const { loadOrCreateIdentity, sealText } = await import("./crypto.js");
+const { loadOrCreateIdentity, sealText, openEnvelope } = await import("./crypto.js");
 describe("resolveEndpoint", () => {
   it("defaults to the staging relay", () => {
     expect(resolveEndpoint({})).toEqual({ host: DEFAULT_HOST, port: DEFAULT_PORT, fromDefault: true });
@@ -309,6 +309,7 @@ describe("nick machine frames", () => {
     const gid = `g-nick-${Date.now()}`;
     // Receiver identity + session in the isolated test dir.
     const mePub = loadOrCreateIdentity().publicKeyB64;
+    store.clearSession();
     store.saveSessionUser(me, "s3cret");
     // Sender identity in its own dir; seal there so the sender private key
     // is the one used (mirrors two devices).
@@ -377,5 +378,294 @@ describe("poisoned history migration", () => {
     b.migratePoisonedHistoryOnce();
     expect(JSON.parse(store.getSetting("history_sync_pending"))).toContain(g);
     b.poisonMigrated = false;
+  });
+});
+
+describe("history fallback walk", () => {
+  type SyncState = {
+    total: number;
+    done: boolean;
+    inFlight: boolean;
+    lastActivityAt: number;
+    tried?: string[];
+    target?: string;
+  };
+  type Backdoor = {
+    dispatch: (f: { v: 2; type: string; [k: string]: unknown }) => void;
+    historySync: Map<string, SyncState>;
+  };
+  const backdoor = () => client as unknown as Backdoor;
+  const withOnlineStubbedSender = (fn: (sent: unknown[]) => void) => {
+    const c = client as unknown as { state: string; sendFrame: (o: object) => boolean };
+    const prevState = c.state;
+    const prevSend = c.sendFrame.bind(client);
+    const sent: unknown[] = [];
+    c.state = "online";
+    c.sendFrame = (o: object) => { sent.push(o); return true; };
+    try {
+      fn(sent);
+    } finally {
+      c.state = prevState;
+      c.sendFrame = prevSend;
+    }
+  };
+
+  it("walks past a ghost electee to the next-oldest member, then settles on exhaustion", () => {
+    const tag = Date.now();
+    const me = `req-fb-${tag}`;
+    const ghost = `ghost-fb-${tag}`;
+    const mid = `mid-fb-${tag}`;
+    const gid = `g-fb-${tag}`;
+    store.clearSession();
+    store.saveSessionUser(me, "s3cret");
+    store.upsertGroupCache(gid, "FB", [
+      { user_id: ghost, role: "member", joined_at: 1000 },
+      { user_id: mid, role: "member", joined_at: 2000 },
+      { user_id: me, role: "member", joined_at: 3000 },
+    ]);
+    const b = backdoor();
+    b.historySync.set(gid, { total: 0, done: false, inFlight: true, lastActivityAt: Date.now() });
+    try {
+      // Ghost electee claims the floor: targeted re-request at next-oldest.
+      withOnlineStubbedSender((sent) => {
+        b.dispatch({ v: 2, type: "history_done", groupId: gid, count: 0, from: ghost });
+        const reqs = sent.filter((f) => (f as { type?: string }).type === "request_history");
+        expect(reqs).toHaveLength(1);
+        expect(reqs[0]).toMatchObject({ groupId: gid, to: mid });
+      });
+      expect(b.historySync.get(gid)).toMatchObject({
+        done: false,
+        inFlight: true,
+        target: mid,
+        tried: [ghost],
+      });
+      // Second member also empty and nobody untried remains: settle quietly.
+      withOnlineStubbedSender((sent) => {
+        b.dispatch({ v: 2, type: "history_done", groupId: gid, count: 0, from: mid });
+        expect(sent.filter((f) => (f as { type?: string }).type === "request_history")).toHaveLength(0);
+      });
+      const st = b.historySync.get(gid);
+      expect(st).toMatchObject({ done: true, inFlight: false });
+      expect(st?.tried ?? []).toEqual(expect.arrayContaining([ghost, mid]));
+      expect(JSON.parse(store.getSetting("history_sync_pending"))).not.toContain(gid);
+    } finally {
+      b.historySync.delete(gid);
+      store.dropGroupCache(gid);
+    }
+  });
+
+  it("resets the tried walk when a sharer actually delivers", () => {
+    const tag = `r${Date.now()}`;
+    const me = `req-rst-${tag}`;
+    const a = `a-rst-${tag}`;
+    const c = `c-rst-${tag}`;
+    const gid = `g-rst-${tag}`;
+    store.clearSession();
+    store.saveSessionUser(me, "s3cret");
+    store.upsertGroupCache(gid, "RST", [
+      { user_id: a, role: "member", joined_at: 1000 },
+      { user_id: c, role: "member", joined_at: 2000 },
+      { user_id: me, role: "member", joined_at: 3000 },
+    ]);
+    const b = backdoor();
+    b.historySync.set(gid, {
+      total: 0,
+      done: false,
+      inFlight: true,
+      lastActivityAt: Date.now(),
+      tried: [a],
+      target: c,
+    });
+    try {
+      withOnlineStubbedSender((sent) => {
+        void sent;
+        b.dispatch({ v: 2, type: "history_done", groupId: gid, count: 3, from: c });
+      });
+      expect(b.historySync.get(gid)).toMatchObject({ total: 3, done: true, tried: [] });
+    } finally {
+      b.historySync.delete(gid);
+      store.dropGroupCache(gid);
+    }
+  });
+});
+
+describe("history error unpark and redrive", () => {
+  type SyncState = {
+    total: number;
+    done: boolean;
+    inFlight: boolean;
+    lastActivityAt: number;
+    tried?: string[];
+    target?: string;
+  };
+  type Backdoor = {
+    dispatch: (f: { v: 2; type: string; [k: string]: unknown }) => void;
+    historySync: Map<string, SyncState>;
+    redriveHistorySync: () => void;
+  };
+  const backdoor = () => client as unknown as Backdoor;
+  const withOnlineStubbedSender = (fn: (sent: unknown[]) => void) => {
+    const c = client as unknown as { state: string; sendFrame: (o: object) => boolean };
+    const prevState = c.state;
+    const prevSend = c.sendFrame.bind(client);
+    const sent: unknown[] = [];
+    c.state = "online";
+    c.sendFrame = (o: object) => { sent.push(o); return true; };
+    try {
+      fn(sent);
+    } finally {
+      c.state = prevState;
+      c.sendFrame = prevSend;
+    }
+  };
+
+  it("unparks open gaps on OFFLINE but keeps the error toast", () => {
+    const b = backdoor();
+    b.historySync.set("g-unpark", { total: 5, done: false, inFlight: true, lastActivityAt: Date.now() });
+    let toasted: unknown = null;
+    const onErr = (m: unknown) => { toasted = m; };
+    socketBus.on("server_error", onErr);
+    try {
+      b.dispatch({ v: 2, type: "error", code: "OFFLINE", message: "no members online" });
+    } finally {
+      socketBus.off("server_error", onErr);
+      b.historySync.delete("g-unpark");
+    }
+    expect(toasted).toMatchObject({ code: "OFFLINE" });
+    // Entry removed above; re-check via a fresh plant that unpark clears
+    // inFlight without touching done/total.
+    b.historySync.set("g-unpark2", { total: 5, done: false, inFlight: true, lastActivityAt: 1 });
+    try {
+      b.dispatch({ v: 2, type: "error", code: "OFFLINE", message: "no members online" });
+      expect(b.historySync.get("g-unpark2")).toMatchObject({ total: 5, done: false, inFlight: false });
+    } finally {
+      b.historySync.delete("g-unpark2");
+    }
+  });
+
+  it("redrives stalled gaps on tick while fresh and done gaps stay quiet", () => {
+    const tag = Date.now();
+    const me = `req-rd-${tag}`;
+    const old = `old-rd-${tag}`;
+    const gid = `g-rd-${tag}`;
+    store.clearSession();
+    store.saveSessionUser(me, "s3cret");
+    store.upsertGroupCache(gid, "RD", [
+      { user_id: old, role: "member", joined_at: 1000 },
+      { user_id: me, role: "member", joined_at: 2000 },
+    ]);
+    const b = backdoor();
+    try {
+      // Fresh in-flight round: the tick leaves it alone.
+      b.historySync.set(gid, { total: 0, done: false, inFlight: true, lastActivityAt: Date.now() });
+      withOnlineStubbedSender((sent) => {
+        b.redriveHistorySync();
+        expect(sent.filter((f) => (f as { type?: string }).type === "request_history")).toHaveLength(0);
+      });
+      // Stale in-flight round: the tick re-arms and re-requests.
+      b.historySync.set(gid, { total: 0, done: false, inFlight: true, lastActivityAt: Date.now() - 61_000 });
+      withOnlineStubbedSender((sent) => {
+        b.redriveHistorySync();
+        const reqs = sent.filter((f) => (f as { type?: string }).type === "request_history");
+        expect(reqs).toHaveLength(1);
+        expect(reqs[0]).toMatchObject({ groupId: gid });
+      });
+      expect(b.historySync.get(gid)).toMatchObject({ inFlight: true, done: false });
+      // Settled gap: quiet forever.
+      b.historySync.set(gid, { total: 2, done: true, inFlight: false, lastActivityAt: Date.now() });
+      withOnlineStubbedSender((sent) => {
+        b.redriveHistorySync();
+        expect(sent.filter((f) => (f as { type?: string }).type === "request_history")).toHaveLength(0);
+      });
+    } finally {
+      b.historySync.delete(gid);
+      store.dropGroupCache(gid);
+    }
+  });
+});
+
+describe("history share piggybacks nick snapshot", () => {
+  type Backdoor = {
+    autoShareHistory: (f: { v: 2; type: string; [k: string]: unknown }) => Promise<void>;
+  };
+  const backdoor = () => client as unknown as Backdoor;
+  const RECIP_DIR = path.join(os.tmpdir(), `yapr-snap-recip-${process.pid}-${Date.now()}`);
+  fs.rmSync(RECIP_DIR, { recursive: true, force: true });
+
+  it("sends rows, done, and a mergeable nick-snapshot to the requester", async () => {
+    const tag = Date.now();
+    const sharer = `sharer-snap-${tag}`;
+    const recip = `recip-snap-${tag}`;
+    const target = `nicktarget-snap-${tag}`;
+    const gid = `g-snap-${tag}`;
+    // Sharer identity + session in the isolated test dir.
+    const sharerPub = loadOrCreateIdentity().publicKeyB64;
+    store.clearSession();
+    store.saveSessionUser(sharer, "s3cret");
+    // Recipient identity in its own dir (mirrors two devices).
+    process.env.YAPR_DATA_DIR = RECIP_DIR;
+    const recipPub = loadOrCreateIdentity().publicKeyB64;
+    process.env.YAPR_DATA_DIR = TEST_DIR;
+    // One shareable row + one master nick row on the sharer.
+    store.insertIncomingMessage(`other-snap-${tag}`, `snap-row-${tag}`, "old hello", 1000, gid);
+    store.setSharedNick(gid, target, "Phone", 1700000000000);
+
+    const c = client as unknown as {
+      state: string;
+      sendFrame: (o: object) => boolean;
+      requestKeys: (ids: string[]) => Promise<Record<string, string>>;
+    };
+    const prevState = c.state;
+    const prevSend = c.sendFrame.bind(client);
+    const prevKeys = c.requestKeys.bind(client);
+    const sent: unknown[] = [];
+    c.state = "online";
+    c.sendFrame = (o: object) => { sent.push(o); return true; };
+    c.requestKeys = async () => ({ [recip]: recipPub });
+    try {
+      await backdoor().autoShareHistory({
+        v: 2,
+        type: "history_request",
+        groupId: gid,
+        requester: recip,
+        before: 9999,
+        limit: 20,
+      });
+    } finally {
+      c.state = prevState;
+      c.sendFrame = prevSend;
+      c.requestKeys = prevKeys;
+    }
+    // Done reports the served row.
+    const dones = sent.filter((f) => (f as { type?: string }).type === "share_history_done");
+    expect(dones).toHaveLength(1);
+    expect(dones[0]).toMatchObject({ groupId: gid, to: recip, count: 1 });
+    // Two DMs to the requester: the history row + the snapshot.
+    const sends = sent.filter(
+      (f) => (f as { type?: string }).type === "send" && (f as { to?: string }).to === recip
+    );
+    expect(sends).toHaveLength(2);
+    // The snapshot opens as a nick-snapshot carrying the master row.
+    process.env.YAPR_DATA_DIR = RECIP_DIR;
+    try {
+      const kinds = sends.map((f) => {
+        const frame = f as { ciphertext: string; nonce: string };
+        return openEnvelope(sharerPub, recip, sharer, {
+          ciphertext: frame.ciphertext,
+          nonce: frame.nonce,
+        });
+      });
+      const snaps = kinds.filter((k) => k.ok && k.kind && k.kind.kind === "nick-snapshot");
+      expect(snaps).toHaveLength(1);
+      const snap = snaps[0];
+      if (!snap || !snap.ok || !snap.kind || snap.kind.kind !== "nick-snapshot") {
+        throw new Error("snapshot frame did not parse as nick-snapshot");
+      }
+      expect(snap.kind.nicks).toEqual(
+        expect.arrayContaining([expect.objectContaining({ userId: target, nick: "Phone" })])
+      );
+    } finally {
+      process.env.YAPR_DATA_DIR = TEST_DIR;
+    }
   });
 });
