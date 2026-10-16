@@ -14,6 +14,21 @@ import {
 import { client } from "./client.js";
 
 /**
+ * Union of confirmed members and session-added ids (both add paths). Keeps
+ * the typed-ID validator and the picker's fresh-filter honest before the
+ * membership snapshot refreshes AND after: once the server confirms an add,
+ * the id lives in both lists and must not double-count. Members first, then
+ * genuinely fresh ids. Pure: unit-tested.
+ */
+export function mergeKnownIds(memberIds: string[], sessionAdded: string[]): string[] {
+  const known = [...memberIds];
+  for (const id of sessionAdded) {
+    if (!known.includes(id)) known.push(id);
+  }
+  return known;
+}
+
+/**
  * Member list for a group. `a` opens the picker to add (admins), `d` removes
  * with confirm (admins), Esc closes. Refreshes on group snapshots.
  * The picker accepts typed IDs via Ctrl+A (same modal as group creation);
@@ -107,7 +122,10 @@ export default memo(function GroupMembersModal({
   }
 
   if (adding) {
-    const knownIds = [...members.map((m) => m.user_id), ...sessionAdded];
+    const knownIds = mergeKnownIds(
+      members.map((m) => m.user_id),
+      sessionAdded
+    );
     const trackAdded = (ids: string[]) => {
       setSessionAdded((prev) => [...prev, ...ids.filter((id) => !prev.includes(id))]);
     };
