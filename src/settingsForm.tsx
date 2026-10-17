@@ -48,6 +48,7 @@ export default memo(function SettingsForm({
     theme: getSetting("theme"),
     time_format: getSetting("time_format"),
     history_sync_pending: getSetting("history_sync_pending"),
+    history_full_sync: getSetting("history_full_sync"),
   });
   const [row, setRow] = useState(0);
   const [editing, setEditing] = useState(false);
