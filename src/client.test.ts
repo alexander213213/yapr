@@ -979,3 +979,187 @@ describe("history rejoin detection", () => {
     }
   });
 });
+
+describe("re-drive fallback continuation", () => {
+  type SyncState = {
+    total: number;
+    done: boolean;
+    inFlight: boolean;
+    lastActivityAt: number;
+    tried?: string[];
+    target?: string;
+    cursor?: number;
+    full?: boolean;
+  };
+  type Backdoor = {
+    dispatch: (f: { v: 2; type: string; [k: string]: unknown }) => void;
+    historySync: Map<string, SyncState>;
+    redriveHistorySync: () => void;
+  };
+  const backdoor = () => client as unknown as Backdoor;
+  const withOnlineStubbedSender = (fn: (sent: unknown[]) => void) => {
+    const c = client as unknown as { state: string; sendFrame: (o: object) => boolean };
+    const prevState = c.state;
+    const prevSend = c.sendFrame.bind(client);
+    const sent: unknown[] = [];
+    c.state = "online";
+    c.sendFrame = (o: object) => { sent.push(o); return true; };
+    try {
+      fn(sent);
+    } finally {
+      c.state = prevState;
+      c.sendFrame = prevSend;
+    }
+  };
+
+  it("continues fallback walk on stall instead of restarting automatic election", () => {
+    const tag = Date.now();
+    const me = `req-fb-${tag}`;
+    const ghost = `ghost-fb-${tag}`;
+    const mid = `mid-fb-${tag}`;
+    const gid = `g-fb-${tag}`;
+    store.clearSession();
+    store.saveSessionUser(me, "s3cret");
+    store.upsertGroupCache(gid, "FB", [
+      { user_id: ghost, role: "member", joined_at: 1000 },
+      { user_id: mid, role: "member", joined_at: 2000 },
+      { user_id: me, role: "member", joined_at: 3000 },
+    ]);
+    const b = backdoor();
+    // Ghost electee claimed floor (tried), in-flight stalled.
+    b.historySync.set(gid, { total: 0, done: false, inFlight: true, lastActivityAt: Date.now() - 61_000, tried: [ghost], target: mid });
+    try {
+      withOnlineStubbedSender((sent) => {
+        b.redriveHistorySync();
+        const reqs = sent.filter((f) => (f as { type?: string }).type === "request_history");
+        expect(reqs).toHaveLength(1);
+        // Continues fallback to mid, not re-electing ghost.
+        expect(reqs[0]).toMatchObject({ groupId: gid, to: mid });
+      });
+      expect(b.historySync.get(gid)).toMatchObject({ inFlight: true, target: mid, tried: [ghost] });
+    } finally {
+      b.historySync.delete(gid);
+      store.dropGroupCache(gid);
+    }
+  });
+
+  it("resumes explicit target on stall even when tried is empty", () => {
+    const tag = Date.now();
+    const me = `req-tgt-${tag}`;
+    const old = `old-tgt-${tag}`;
+    const gid = `g-tgt-${tag}`;
+    store.clearSession();
+    store.saveSessionUser(me, "s3cret");
+    store.upsertGroupCache(gid, "TGT", [
+      { user_id: old, role: "member", joined_at: 1000 },
+      { user_id: me, role: "member", joined_at: 3000 },
+    ]);
+    const b = backdoor();
+    // Targeted round in progress, stalled.
+    b.historySync.set(gid, { total: 0, done: false, inFlight: true, lastActivityAt: Date.now() - 61_000, target: old });
+    try {
+      withOnlineStubbedSender((sent) => {
+        b.redriveHistorySync();
+        const reqs = sent.filter((f) => (f as { type?: string }).type === "request_history");
+        expect(reqs).toHaveLength(1);
+        expect(reqs[0]).toMatchObject({ groupId: gid, to: old });
+      });
+      expect(b.historySync.get(gid)).toMatchObject({ inFlight: true, target: old });
+    } finally {
+      b.historySync.delete(gid);
+      store.dropGroupCache(gid);
+    }
+  });
+});
+
+describe("autoShareHistory self-sharer guard", () => {
+  type Backdoor = {
+    autoShareHistory: (f: { v: 2; type: string; [k: string]: unknown }) => Promise<void>;
+  };
+  const backdoor = () => client as unknown as Backdoor;
+
+  it("returns done{0} immediately when the requester is self, without sharing rows", async () => {
+    const tag = Date.now();
+    const self = `self-sg-${tag}`;
+    const gid = `g-sg-${tag}`;
+    store.clearSession();
+    store.saveSessionUser(self, "s3cret");
+    // Self has some history.
+    store.insertIncomingMessage(`o-${tag}`, `sg-row-${tag}`, "my message", 1000, gid);
+
+    const c = client as unknown as {
+      state: string;
+      sendFrame: (o: object) => boolean;
+    };
+    const prevState = c.state;
+    const prevSend = c.sendFrame.bind(client);
+    const sent: unknown[] = [];
+    c.state = "online";
+    c.sendFrame = (o: object) => { sent.push(o); return true; };
+    try {
+      await backdoor().autoShareHistory({
+        v: 2,
+        type: "history_request",
+        groupId: gid,
+        requester: self,
+        before: 9999,
+        limit: 20,
+      });
+    } finally {
+      c.state = prevState;
+      c.sendFrame = prevSend;
+    }
+    // Only the done notice, no rows shared, no nick snapshot sent.
+    const dones = sent.filter((f) => (f as { type?: string }).type === "share_history_done");
+    expect(dones).toHaveLength(1);
+    expect(dones[0]).toMatchObject({ groupId: gid, to: self, count: 0 });
+    const sends = sent.filter((f) => (f as { type?: string }).type === "send");
+    expect(sends).toHaveLength(0);
+  });
+
+  it("shares normally when the requester is a different member", async () => {
+    const tag = Date.now();
+    const sharer = `sharer-sg-${tag}`;
+    const recip = `recip-sg-${tag}`;
+    const gid = `g-sg2-${tag}`;
+    const recipPub = loadOrCreateIdentity().publicKeyB64;
+    store.clearSession();
+    store.saveSessionUser(sharer, "s3cret");
+    store.insertIncomingMessage(`o-${tag}`, `sg2-row-${tag}`, "their message", 1000, gid);
+
+    const c = client as unknown as {
+      state: string;
+      sendFrame: (o: object) => boolean;
+      requestKeys: (ids: string[]) => Promise<Record<string, string>>;
+    };
+    const prevState = c.state;
+    const prevSend = c.sendFrame.bind(client);
+    const prevKeys = c.requestKeys.bind(client);
+    const sent: unknown[] = [];
+    c.state = "online";
+    c.sendFrame = (o: object) => { sent.push(o); return true; };
+    c.requestKeys = async () => ({ [recip]: recipPub });
+    try {
+      await backdoor().autoShareHistory({
+        v: 2,
+        type: "history_request",
+        groupId: gid,
+        requester: recip,
+        before: 9999,
+        limit: 20,
+      });
+    } finally {
+      c.state = prevState;
+      c.sendFrame = prevSend;
+      c.requestKeys = prevKeys;
+    }
+    const dones = sent.filter((f) => (f as { type?: string }).type === "share_history_done");
+    expect(dones).toHaveLength(1);
+    expect(dones[0]).toMatchObject({ groupId: gid, to: recip, count: 1 });
+    // Row shared + nick snapshot sent (2 DMs).
+    const sends = sent.filter(
+      (f) => (f as { type?: string }).type === "send" && (f as { to?: string }).to === recip
+    );
+    expect(sends).toHaveLength(2);
+  });
+});
