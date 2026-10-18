@@ -819,6 +819,11 @@ class YaprClient {
 
   /** Elected-sharer entry: share the requested gap window, no prompt. */
   private async autoShareHistory(frame: HistoryRequestFrame): Promise<void> {
+    // Don't share to self — the requester already has these rows locally.
+    if (frame.requester === store.getSessionUser()?.user_id) {
+      this.sendFrame(shareHistoryDoneRequest(frame.requester, frame.groupId, 0));
+      return;
+    }
     // Legacy bounds-absent requests (old manual flow) keep old semantics:
     // the most recent window. New requests carry the true gap bounds.
     const before = frame.before ?? Date.now();
@@ -962,10 +967,22 @@ class YaprClient {
       }
       // Resume an interior campaign where it stalled (same cursor, fresh
       // election — the previous target may be the one that went quiet).
+      // Otherwise continue a fallback walk if we have tried sharers or a
+      // targeted round in progress (prevents ghost re-election loops).
       // Otherwise start one for suspected rejoins, else the outer window.
       if (st?.full && st?.cursor !== undefined) {
         this.requestHistoryGap(g.groupId, undefined, st.cursor, true);
         continue;
+      }
+      if ((st?.tried && st.tried.length > 0) || st?.target) {
+        const tried = st?.tried ?? [];
+        const target = st?.target;
+        const next = target && !tried.includes(target) ? target : this.nextUntriedSharer(g.groupId, tried);
+        if (next) {
+          this.requestHistoryGap(g.groupId, next, st?.cursor, st?.full);
+          continue;
+        }
+        // Exhausted: fall through to outer logic (will settle on next done{0}).
       }
       const earliest = store.getGroupEarliestCreatedAt(g.groupId);
       if (earliest !== null && earliest < own.joined_at && !fullSyncDoneFor(g.groupId, own.joined_at)) {
