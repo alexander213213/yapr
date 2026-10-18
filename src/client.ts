@@ -102,7 +102,9 @@ const HISTORY_SYNC_STALL_MS = 60_000;
 const HISTORY_SYNC_REDRIVE_MS = 30_000;
 
 /** Per-group backfill loop state. `tried`/`target` drive the fallback walk:
- *  sharers that answered empty, and the explicitly targeted sharer, if any. */
+ *  sharers that answered empty, and the explicitly targeted sharer, if any.
+ *  `cursor`/`full` drive interior walks (leave/rejoin holes): the exclusive
+ *  upper bound of the served window and whether this campaign scans it. */
 type HistorySyncState = {
   total: number;
   done: boolean;
@@ -110,6 +112,8 @@ type HistorySyncState = {
   lastActivityAt: number;
   tried?: string[] | undefined;
   target?: string | undefined;
+  cursor?: number | undefined;
+  full?: boolean | undefined;
 };
 
 /** Groups with an unfinished backfill (survives restarts via settings). */
@@ -128,6 +132,41 @@ function setPendingHistorySync(ids: Set<string>): void {
     store.setSetting("history_sync_pending", JSON.stringify([...ids]));
   } catch {
     // Best effort: worst case a restart mid-sync stalls one gap window.
+  }
+}
+
+/**
+ * Interior-walk completion markers: { [groupId]: joinedAt } for memberships
+ * whose full newest-to-floor walk finished. A member holding rows older than
+ * its own joined_at with a stale (or missing) marker is a rejoiner with a
+ * leave-window hole. Cleared implicitly: rejoin bumps joined_at, which
+ * mismatches the recorded value. Best effort like the pending set.
+ */
+function getFullSyncMarkers(): Record<string, number> {
+  try {
+    const parsed: unknown = JSON.parse(store.getSetting("history_full_sync"));
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
+    const out: Record<string, number> = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof v === "number" && Number.isInteger(v) && v >= 0) out[k] = v;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function fullSyncDoneFor(groupId: string, joinedAt: number): boolean {
+  return getFullSyncMarkers()[groupId] === joinedAt;
+}
+
+function setFullSyncDone(groupId: string, joinedAt: number): void {
+  try {
+    const markers = getFullSyncMarkers();
+    markers[groupId] = joinedAt;
+    store.setSetting("history_full_sync", JSON.stringify(markers));
+  } catch {
+    // Best effort: worst case the next boot re-walks (dedup absorbs it).
   }
 }
 
@@ -718,26 +757,30 @@ class YaprClient {
    * ORIGINAL attribution inside the envelope (stable original message id for
    * cross-sharer dedup). Always closes with a done notice — including zero —
    * so the requester can tell "floor reached" from failure. Rows the sharer
-   * cannot decrypt are skipped.
+   * cannot decrypt are skipped. Returns the served count and the floor
+   * (oldest created_at served, null when nothing was): the requester's
+   * cursor for the next window.
    */
   async shareHistoryGap(
     groupId: string,
     toUserId: string,
     before: number,
     limit: number
-  ): Promise<number> {
+  ): Promise<{ count: number; floor: number | null }> {
     const user = store.getSessionUser();
     if (!user) throw new Error("not registered");
     const rows = store.getGroupMessagesBefore(groupId, before, limit).reverse();
     let shared = 0;
+    let floor: number | null = null;
     for (const row of rows) {
       if (row.text === UNREADABLE_PLACEHOLDER) continue;
       if (!row.message_id) continue;
       await this.sendHistoryRow(groupId, toUserId, row);
       shared += 1;
+      if (floor === null || row.created_at < floor) floor = row.created_at;
     }
-    this.sendFrame(shareHistoryDoneRequest(toUserId, groupId, shared));
-    return shared;
+    this.sendFrame(shareHistoryDoneRequest(toUserId, groupId, shared, floor));
+    return { count: shared, floor };
   }
 
   private async sendHistoryRow(
@@ -817,8 +860,12 @@ class YaprClient {
    * Request one backfill round for a group. Completion arrives via
    * history_done. Absent `to` = automatic mode (server elects); a `to`
    * targets one member explicitly (fallback walk — same server path).
+   * `before` overrides the window's upper bound (cursor walks); absent means
+   * the requester's earliest row (outer window). `full` marks an interior
+   * (leave-window) campaign: continuation advances by the sharer's floor
+   * instead of earliest-tightening.
    */
-  requestHistoryGap(groupId: string, to?: string): void {
+  requestHistoryGap(groupId: string, to?: string, before?: number, full?: boolean): void {
     if (!this.online) return;
     const st = this.historySync.get(groupId) ?? {
       total: 0,
@@ -830,15 +877,16 @@ class YaprClient {
     st.inFlight = true;
     st.lastActivityAt = Date.now();
     st.target = to;
+    const earliest = store.getGroupEarliestCreatedAt(groupId);
+    const bound = before ?? earliest ?? Date.now();
+    st.cursor = bound;
+    st.full = full;
     this.historySync.set(groupId, st);
     const pending = getPendingHistorySync();
     pending.add(groupId);
     setPendingHistorySync(pending);
-    const earliest = store.getGroupEarliestCreatedAt(groupId);
     socketBus.emit("history_sync_state", { groupId, waiting: true });
-    this.sendFrame(
-      requestHistoryRequest(groupId, to, earliest ?? Date.now(), HISTORY_SYNC_ROUND_LIMIT)
-    );
+    this.sendFrame(requestHistoryRequest(groupId, to, bound, HISTORY_SYNC_ROUND_LIMIT));
   }
 
   /**
@@ -885,6 +933,8 @@ class YaprClient {
           lastActivityAt: now,
           tried: st?.tried,
           target: st?.target,
+          cursor: st?.cursor,
+          full: st?.full,
         });
         socketBus.emit("history_sync_state", { groupId: g.groupId, waiting: false });
         continue;
@@ -904,8 +954,22 @@ class YaprClient {
           lastActivityAt: now,
           tried: st?.tried,
           target: st?.target,
+          cursor: st?.cursor,
+          full: st?.full,
         });
         socketBus.emit("history_sync_state", { groupId: g.groupId, waiting: false });
+        continue;
+      }
+      // Resume an interior campaign where it stalled (same cursor, fresh
+      // election — the previous target may be the one that went quiet).
+      // Otherwise start one for suspected rejoins, else the outer window.
+      if (st?.full && st?.cursor !== undefined) {
+        this.requestHistoryGap(g.groupId, undefined, st.cursor, true);
+        continue;
+      }
+      const earliest = store.getGroupEarliestCreatedAt(g.groupId);
+      if (earliest !== null && earliest < own.joined_at && !fullSyncDoneFor(g.groupId, own.joined_at)) {
+        this.requestHistoryGap(g.groupId, undefined, Date.now() + 1, true);
         continue;
       }
       this.requestHistoryGap(g.groupId);
@@ -934,10 +998,34 @@ class YaprClient {
       // Silent thread refresh: rows arrived read-marked, so no badges bump.
       socketBus.emit("chats_changed");
     }
-    if (frame.count === HISTORY_SYNC_ROUND_LIMIT && st.total < HISTORY_SYNC_MAX_TOTAL) {
-      // Full batch: the gap runs deeper. The next round re-reads the current
-      // earliest row, so the window always tightens. A targeted round stays
-      // targeted: the serving sharer just proved depth.
+    if (frame.count === HISTORY_SYNC_ROUND_LIMIT) {
+      if (st.total >= HISTORY_SYNC_MAX_TOTAL) {
+        // Process cap: coverage unknown (the floor may sit deeper), so
+        // settle WITHOUT the marker — a reboot re-walks (dedup absorbs it).
+        this.settleHistorySync(frame.groupId, st, false);
+        return;
+      }
+      // Full batch: the gap runs deeper. A targeted round stays targeted:
+      // the serving sharer just proved depth.
+      if (st.full) {
+        // Interior walk: advance by the sharer's floor, not the requester's
+        // earliest (already-held rows would re-serve the same window
+        // forever). +1 keeps same-millisecond rows inclusive: the window is
+        // created_at < before, so before = floor would drop them.
+        const floor = frame.floor ?? null;
+        if (floor === null) {
+          // Legacy sharer predates cursors: settle rather than loop the same
+          // window. No marker — coverage is unknown, a reboot re-walks.
+          this.settleHistorySync(frame.groupId, st, false);
+          return;
+        }
+        st.cursor = floor + 1;
+        this.historySync.set(frame.groupId, st);
+        this.requestHistoryGap(frame.groupId, st.target, st.cursor, true);
+        return;
+      }
+      // Outer walk: the next round re-reads the current earliest row, so the
+      // window always tightens.
       this.historySync.set(frame.groupId, st);
       this.requestHistoryGap(frame.groupId, st.target);
     } else if (frame.count === 0) {
@@ -946,12 +1034,12 @@ class YaprClient {
       const next = this.nextUntriedSharer(frame.groupId, tried);
       if (next) {
         this.historySync.set(frame.groupId, st);
-        this.requestHistoryGap(frame.groupId, next);
+        this.requestHistoryGap(frame.groupId, next, st.cursor, st.full);
       } else {
-        this.settleHistorySync(frame.groupId, st);
+        this.settleHistorySync(frame.groupId, st, true);
       }
     } else {
-      this.settleHistorySync(frame.groupId, st);
+      this.settleHistorySync(frame.groupId, st, true);
     }
   }
 
@@ -964,13 +1052,23 @@ class YaprClient {
     return undefined;
   }
 
-  /** Close a gap: mark done, drop the pending flag, clear any waiting UI. */
-  private settleHistorySync(groupId: string, st: HistorySyncState): void {
+  /** Close a gap: mark done, drop the pending flag, clear any waiting UI.
+   *  `markFull` records the interior-walk completion marker for the current
+   *  membership, so reboots stay on cheap outer checks — set only when the
+   *  walk actually reached a floor, never on cap settles or legacy cutoffs.
+   *  Holders offline throughout are never consulted (same epistemic limit as
+   *  `done` itself): the marker claims "walked all online holders". */
+  private settleHistorySync(groupId: string, st: HistorySyncState, markFull: boolean): void {
     st.done = true;
     this.historySync.set(groupId, st);
     const pending = getPendingHistorySync();
     pending.delete(groupId);
     setPendingHistorySync(pending);
+    if (markFull) {
+      const me = store.getSessionUser()?.user_id;
+      const own = me ? store.getGroupMembers(groupId).find((m) => m.user_id === me) : undefined;
+      if (own) setFullSyncDone(groupId, own.joined_at);
+    }
     socketBus.emit("history_sync_state", { groupId, waiting: false });
   }
 
