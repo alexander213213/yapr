@@ -1163,3 +1163,102 @@ describe("autoShareHistory self-sharer guard", () => {
     expect(sends).toHaveLength(2);
   });
 });
+
+describe("stall records ghost electee for fallback", () => {
+  type SyncState = {
+    total: number;
+    done: boolean;
+    inFlight: boolean;
+    lastActivityAt: number;
+    tried?: string[];
+    target?: string;
+    cursor?: number;
+    full?: boolean;
+  };
+  type Backdoor = {
+    dispatch: (f: { v: 2; type: string; [k: string]: unknown }) => void;
+    historySync: Map<string, SyncState>;
+    redriveHistorySync: () => void;
+  };
+  const backdoor = () => client as unknown as Backdoor;
+  const withOnlineStubbedSender = (fn: (sent: unknown[]) => void) => {
+    const c = client as unknown as { state: string; sendFrame: (o: object) => boolean };
+    const prevState = c.state;
+    const prevSend = c.sendFrame.bind(client);
+    const sent: unknown[] = [];
+    c.state = "online";
+    c.sendFrame = (o: object) => { sent.push(o); return true; };
+    try {
+      fn(sent);
+    } finally {
+      c.state = prevState;
+      c.sendFrame = prevSend;
+    }
+  };
+
+  it("records ghost electee in tried on stall, fallback walk continues on re-drive", () => {
+    const tag = Date.now();
+    const me = `req-ghost-${tag}`;
+    const ghost = `ghost-${tag}`; // older, would be elected
+    const mid = `mid-${tag}`; // next oldest
+    const gid = `g-ghost-${tag}`;
+    store.clearSession();
+    store.saveSessionUser(me, "s3cret");
+    store.upsertGroupCache(gid, "GHOST", [
+      { user_id: ghost, role: "member", joined_at: 1000 },
+      { user_id: mid, role: "member", joined_at: 2000 },
+      { user_id: me, role: "member", joined_at: 3000 },
+    ]);
+    const b = backdoor();
+    // Stalled automatic round (no target, no tried yet) — ghost was elected.
+    b.historySync.set(gid, { total: 0, done: false, inFlight: true, lastActivityAt: Date.now() - 61_000 });
+    try {
+      withOnlineStubbedSender((sent) => {
+        b.redriveHistorySync();
+        // Ghost recorded in tried, fallback walk continues immediately to mid.
+        const reqs = sent.filter((f) => (f as { type?: string }).type === "request_history");
+        expect(reqs).toHaveLength(1);
+        expect(reqs[0]).toMatchObject({ groupId: gid, to: mid });
+      });
+      expect(b.historySync.get(gid)).toMatchObject({
+        inFlight: true,
+        target: mid,
+        tried: [ghost],
+      });
+    } finally {
+      b.historySync.delete(gid);
+      store.dropGroupCache(gid);
+    }
+  });
+
+  it("continues fallback to next member on next re-drive after ghost recorded", () => {
+    const tag = Date.now();
+    const me = `req-ghost2-${tag}`;
+    const ghost = `ghost2-${tag}`;
+    const mid = `mid2-${tag}`;
+    const gid = `g-ghost2-${tag}`;
+    store.clearSession();
+    store.saveSessionUser(me, "s3cret");
+    store.upsertGroupCache(gid, "GHOST2", [
+      { user_id: ghost, role: "member", joined_at: 1000 },
+      { user_id: mid, role: "member", joined_at: 2000 },
+      { user_id: me, role: "member", joined_at: 3000 },
+    ]);
+    const b = backdoor();
+    // After first stall: ghost already recorded in tried.
+    b.historySync.set(gid, { total: 0, done: false, inFlight: true, lastActivityAt: Date.now() - 61_000, tried: [ghost] });
+    try {
+      withOnlineStubbedSender((sent) => {
+        b.redriveHistorySync();
+        const reqs = sent.filter((f) => (f as { type?: string }).type === "request_history");
+        expect(reqs).toHaveLength(1);
+        // Fallback walk continues to mid (next untried).
+        expect(reqs[0]).toMatchObject({ groupId: gid, to: mid });
+      });
+      expect(b.historySync.get(gid)).toMatchObject({ inFlight: true, target: mid, tried: [ghost] });
+    } finally {
+      b.historySync.delete(gid);
+      store.dropGroupCache(gid);
+    }
+  });
+});

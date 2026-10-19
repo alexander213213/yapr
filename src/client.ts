@@ -927,6 +927,27 @@ class YaprClient {
       if (st && st.inFlight) {
         // Stale round (sharer went quiet): allow exactly one more attempt.
         // The next done or timeout re-arms from here.
+        // If we were in automatic mode (no target, no tried), determine who
+        // was likely elected (oldest online member, excluding self) and add
+        // them to tried so the re-drive continues the fallback walk instead
+        // of re-electing the same ghost.
+        const wasAuto = !st.target && !st.tried?.length;
+        if (wasAuto) {
+          const members = store.getGroupMembers(g.groupId);
+          const own = me ? members.find((m) => m.user_id === me) : undefined;
+          if (own) {
+            const oldest = members
+              .filter((m) => m.user_id !== own.user_id)
+              .reduce((best, m) =>
+                !best || m.joined_at < best.joined_at || (m.joined_at === best.joined_at && m.user_id < best.user_id)
+                  ? m : best,
+                null as { user_id: string; joined_at: number } | null
+              );
+            if (oldest && !st.tried?.includes(oldest.user_id)) {
+              st.tried = [...(st.tried ?? []), oldest.user_id];
+            }
+          }
+        }
         st.inFlight = false;
         st.lastActivityAt = now;
       }
