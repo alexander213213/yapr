@@ -44,6 +44,15 @@ const {
   THREAD_VIEW_LIMIT,
 } = await import("./store.js");
 
+describe("DM read marking", () => {
+  it("leaves the peer's group messages unread when their DM is opened", () => {
+    const peer = `dm-vs-group-${UID}`;
+    insertIncomingMessage(peer, `dvg-dm-${UID}`, "dm", 1);
+    insertIncomingMessage(peer, `dvg-g-${UID}`, "group", 2, `grp-dvg-${UID}`);
+    expect(markThreadRead(peer)).toEqual([`dvg-dm-${UID}`]);
+  });
+});
+
 describe("thread view window", () => {
   it("shows the newest rows (oldest-first) once a DM outgrows the limit", () => {
     const peer = `long-dm-${UID}`;

@@ -178,9 +178,11 @@ export default memo(function MessagesBox({ focused, contactInfo, availableHeight
             setMessages(prev => {
                 const newList = prev.map(msg => {
                     if (msg.client_message_id === message.clientMessageId) {
+                        // Keep the server id: read receipts match on it.
                         return {
                             ...msg,
-                            status: "sent" as const
+                            status: "sent" as const,
+                            message_id: message.messageId
                         }
                     }
                     return msg
