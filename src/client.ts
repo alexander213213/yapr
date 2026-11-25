@@ -6,6 +6,7 @@ import {
   addMembersRequest,
   createGroupRequest,
   fetchGroupsRequest,
+  fetchPendingRequest,
   fetchKeysRequest,
   identifyRequest,
   leaveGroupRequest,
@@ -34,6 +35,7 @@ import type { ForwardBlock, NickPayload } from "./crypto.js";
 import * as store from "./store.js";
 import { loadReclaimToken, resolveDataDir, saveReclaimToken } from "./storage.js";
 import { socketBus } from "./eventStore.js";
+import { MAX_CIPHERTEXT_B64, MAX_GROUP_FRAME_BYTES } from "./messageLimits.js";
 import type { MessageRow } from "./types.js";
 
 export type ConnState = "offline" | "connecting" | "online";
@@ -92,6 +94,13 @@ const MAX_FRAME_BYTES = Number(process.env.MAX_FRAME_BYTES ?? 64 * 1024);
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30_000;
 const KEYS_TIMEOUT_MS = 10_000;
+/** Server's message when the same account identifies on another socket. */
+const SIGNED_IN_ELSEWHERE = "signed in from another device";
+/** Server's rate-limit message for fetch_keys (the only error it answers with). */
+const KEYS_RATE_LIMITED = "too many key lookups";
+/** Server-side fetch_keys bounds (yapr-server protocol.ts): ids 1..64 chars, ≤50 per request. */
+const MAX_USER_ID_LEN = 64;
+const MAX_KEYS_PER_REQUEST = 50;
 
 /** History backfill: rows per auto round, process cap per group, stall horizon. */
 const HISTORY_SYNC_ROUND_LIMIT = 20;
@@ -170,6 +179,14 @@ function setFullSyncDone(groupId: string, joinedAt: number): void {
   }
 }
 
+const MESSAGE_TOO_LONG = "message too long to relay";
+
+/** Refuse to transmit an envelope the server would reject (or kill the
+ *  socket over). Throwing keeps the row pending; flushOutbox skips it. */
+function assertEnvelopeFits(ciphertextB64: string): void {
+  if (ciphertextB64.length > MAX_CIPHERTEXT_B64) throw new Error(MESSAGE_TOO_LONG);
+}
+
 function tlsOptions(): tls.ConnectionOptions {
   return trust.options;
 }
@@ -187,7 +204,21 @@ class YaprClient {
   private reconnectAttempt = 0;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private keysChain: Promise<void> = Promise.resolve();
-  private keysWaiter: ((keys: Record<string, string>) => void) | null = null;
+  // One fetch_keys in flight at a time (keysChain). `keys` frames carry no
+  // request id, so a reply arriving after its request timed out would be
+  // handed to the NEXT request. staleKeysReplies counts those expected late
+  // replies so they are dropped instead. Every fetch_keys is answered by
+  // exactly one `keys` frame or one key rate-limit error, which keeps the
+  // count exact; both reset per connection.
+  private keysWaiter: {
+    resolve: (keys: Record<string, string>) => void;
+    reject: (err: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+  } | null = null;
+  private staleKeysReplies = 0;
+  // Identified on the current socket. Requests before identify are answered
+  // with UNAUTH (which would also skew the keys reply count).
+  private identified = false;
   // Membership snapshot waiters: a SET, not a slot. Overlapping refreshes
   // (e.g. a group_updated broadcast landing mid-refresh — which creation
   // always triggers) must all settle; a single slot lets the second request
@@ -223,6 +254,14 @@ class YaprClient {
   // Poisoned-history migration runs once per process (reconnects must not
   // re-wipe; the delete is idempotent anyway, but re-queueing would spam).
   private poisonMigrated = false;
+  // Offline-inbox paging: (createdAt, messageId) of the last `incoming` seen.
+  // The server writes a whole page synchronously before its `pending_done`,
+  // so at that point this is the page's last row — the next page's cursor.
+  private lastInboxCursor: { createdAt: number; messageId: string } | null = null;
+  // Set when the server signs us out because the same account identified
+  // elsewhere. Reconnecting would kick the other device, which reconnects
+  // and kicks us: an endless flap. Stay offline until start() is called again.
+  private kicked = false;
 
   get online(): boolean {
     return this.state === "online";
@@ -230,6 +269,7 @@ class YaprClient {
 
   start(): void {
     this.stopped = false;
+    this.kicked = false;
     if (!this.syncTimer) {
       this.syncTimer = setInterval(() => {
         if (!this.stopped && this.online) {
@@ -270,6 +310,17 @@ class YaprClient {
     this.reclaimInFlight = false;
     this.pendingReclaimCreds = null;
     this.identifyPendingUserId = null;
+    this.lastInboxCursor = null;
+    this.identified = false;
+    this.staleKeysReplies = 0;
+    if (this.keysWaiter) {
+      // Its socket is gone: no reply can come. Fail it now rather than let
+      // its timer fire later and miscount a reply on the new socket.
+      const waiter = this.keysWaiter;
+      this.keysWaiter = null;
+      clearTimeout(waiter.timer);
+      waiter.reject(new Error("offline"));
+    }
     let socket: tls.TLSSocket;
     try {
       socket = tls.connect({ host: HOST, port: PORT, ...tlsOptions() });
@@ -306,6 +357,7 @@ class YaprClient {
     if (this.socket !== socket) return;
     this.socket = null;
     this.setState("offline");
+    if (this.kicked) return;
     this.scheduleReconnect("connection closed");
   }
 
@@ -429,6 +481,7 @@ class YaprClient {
       case "identified":
         this.persistReclaimToken(frame.reclaimToken);
         this.identifyPendingUserId = null;
+        this.identified = true;
         if (this.pendingReclaimCreds && this.pendingReclaimCreds.userId === frame.userId) {
           store.saveSessionUser(this.pendingReclaimCreds.userId, this.pendingReclaimCreds.secret);
           this.pendingReclaimCreds = null;
@@ -448,9 +501,15 @@ class YaprClient {
         socketBus.emit("send_ack", frame);
         break;
       case "incoming":
+        this.lastInboxCursor = { createdAt: frame.timestamp, messageId: frame.messageId };
         void this.handleIncoming(frame);
         break;
       case "pending_done":
+        // The server only pushes the first inbox page on identify; the rest
+        // must be pulled, or anything past it waits for the next reconnect.
+        if (frame.hasMore && this.lastInboxCursor) {
+          this.sendFrame(fetchPendingRequest(this.lastInboxCursor));
+        }
         break;
       case "read_receipt":
         store.markMessageRead(frame.messageId);
@@ -478,6 +537,10 @@ class YaprClient {
         this.onHistoryDone(frame);
         break;
       case "error":
+        if (frame.code === "RATE_LIMITED" && frame.message === KEYS_RATE_LIMITED) {
+          // The answer to a fetch_keys: settle it (or consume a stale slot).
+          this.settleKeys(null);
+        }
         if (frame.code === "OFFLINE") {
           // Most often a history election with nobody electable (or a
           // targeted share at a departed member): unpark open gaps so the
@@ -503,6 +566,15 @@ class YaprClient {
           });
           break;
         }
+        if (
+          frame.code === "UNAUTH" &&
+          !this.identifyPendingUserId &&
+          frame.message === SIGNED_IN_ELSEWHERE
+        ) {
+          this.kicked = true;
+          socketBus.emit("session_kicked");
+          break;
+        }
         if (frame.code === "UNAUTH" && this.identifyPendingUserId && !this.reclaimAttempted) {
           // Identify rejected while we hold a stored session: the server
           // likely lost its database. Try silent recovery; the original
@@ -517,9 +589,22 @@ class YaprClient {
   }
 
   private resolveKeys(frame: KeysFrame): void {
+    this.settleKeys(frame.keys);
+  }
+
+  /** Settle the in-flight key lookup with a reply (null = rate-limited). */
+  private settleKeys(keys: Record<string, string> | null): void {
+    if (this.staleKeysReplies > 0) {
+      // Late answer to a request that already timed out: not ours.
+      this.staleKeysReplies -= 1;
+      return;
+    }
     const waiter = this.keysWaiter;
     this.keysWaiter = null;
-    if (waiter) waiter(frame.keys);
+    if (!waiter) return;
+    clearTimeout(waiter.timer);
+    if (keys) waiter.resolve(keys);
+    else waiter.reject(new Error("key lookup rate-limited"));
   }
 
   private resolveGroups(frame: GroupsFrame): void {
@@ -641,9 +726,13 @@ class YaprClient {
   }
 
   /** Fetch missing pubkeys (cached in store). Serialized; concurrent callers queue. */
-  async requestKeys(userIds: string[]): Promise<Record<string, string>> {
+  async requestKeys(
+    userIds: string[],
+    opts: { force?: boolean } = {}
+  ): Promise<Record<string, string>> {
     const cached: Record<string, string> = {};
     const missing = userIds.filter((id) => {
+      if (opts.force) return true;
       const key = store.getPeerKey(id);
       if (key) {
         cached[id] = key;
@@ -667,19 +756,33 @@ class YaprClient {
     return cached;
   }
 
-  private fetchKeysRoundTrip(userIds: string[]): Promise<Record<string, string>> {
+  private async fetchKeysRoundTrip(userIds: string[]): Promise<Record<string, string>> {
+    // Ids the server would reject (frame validation) can never have a key;
+    // dropping them keeps every request answerable by a `keys` frame.
+    const valid = [...new Set(userIds)].filter((id) => id.length >= 1 && id.length <= MAX_USER_ID_LEN);
+    const out: Record<string, string> = {};
+    for (let i = 0; i < valid.length; i += MAX_KEYS_PER_REQUEST) {
+      Object.assign(out, await this.fetchKeysBatch(valid.slice(i, i + MAX_KEYS_PER_REQUEST)));
+    }
+    return out;
+  }
+
+  private fetchKeysBatch(userIds: string[]): Promise<Record<string, string>> {
+    if (!this.identified) return Promise.reject(new Error("offline"));
     if (!this.sendFrame(fetchKeysRequest(userIds))) {
       return Promise.reject(new Error("offline"));
     }
     return new Promise<Record<string, string>>((resolve, reject) => {
-      this.keysWaiter = resolve;
       const timer = setTimeout(() => {
-        if (this.keysWaiter) {
+        if (this.keysWaiter?.timer === timer) {
           this.keysWaiter = null;
+          // Its reply may still arrive; it must not satisfy the next request.
+          this.staleKeysReplies += 1;
           reject(new Error("keys lookup timed out"));
         }
       }, KEYS_TIMEOUT_MS);
       if (timer.unref) timer.unref();
+      this.keysWaiter = { resolve, reject, timer };
     });
   }
 
@@ -704,6 +807,7 @@ class YaprClient {
     const keys = await this.requestKeys([to]);
     const nick = store.nickForContext(groupId ?? null, user.user_id);
     const envelope = sealText(this.peerKeyOrThrow(to, keys), user.user_id, to, text, nick, fwd);
+    assertEnvelopeFits(envelope.ciphertext);
     if (!this.sendFrame(sendRequest(to, clientMessageId, envelope, groupId))) {
       throw new Error("offline");
     }
@@ -726,7 +830,12 @@ class YaprClient {
       to: m.user_id,
       ...sealText(this.peerKeyOrThrow(m.user_id, keys), user.user_id, m.user_id, text, nick),
     }));
-    if (!this.sendFrame(sendGroupRequest(groupId, clientMessageId, envelopes))) {
+    for (const env of envelopes) assertEnvelopeFits(env.ciphertext);
+    const frame = sendGroupRequest(groupId, clientMessageId, envelopes);
+    if (Buffer.byteLength(JSON.stringify(frame), "utf8") > MAX_GROUP_FRAME_BYTES) {
+      throw new Error(MESSAGE_TOO_LONG);
+    }
+    if (!this.sendFrame(frame)) {
       throw new Error("offline");
     }
   }
@@ -734,7 +843,8 @@ class YaprClient {
   /** Resend unsent outbox rows with their original ids (idempotent server-side). */
   async flushOutbox(): Promise<void> {
     for (const row of store.getPendingOutbox()) {
-      if (!this.online || !row.client_message_id) break;
+      if (!this.online) break;
+      if (!row.client_message_id) continue;
       try {
         if (row.group_id) {
           await this.sendGroupText(
@@ -746,7 +856,10 @@ class YaprClient {
           await this.sendChatText(row.peer_id, row.client_message_id, row.text);
         }
       } catch {
-        break;
+        // Only a lost transport stops the flush. A row-specific failure (no
+        // key for a mistyped id, a group we left) used to break here too,
+        // stranding every message queued after it forever.
+        if (!this.online) break;
       }
     }
   }
@@ -775,7 +888,14 @@ class YaprClient {
     for (const row of rows) {
       if (row.text === UNREADABLE_PLACEHOLDER) continue;
       if (!row.message_id) continue;
-      await this.sendHistoryRow(groupId, toUserId, row);
+      try {
+        await this.sendHistoryRow(groupId, toUserId, row);
+      } catch (err) {
+        // A row near the size cap can overflow once the forward block is
+        // added; skip it rather than abort the round without a done signal.
+        if (err instanceof Error && err.message === MESSAGE_TOO_LONG) continue;
+        throw err;
+      }
       shared += 1;
       if (floor === null || row.created_at < floor) floor = row.created_at;
     }
@@ -812,6 +932,7 @@ class YaprClient {
         sentAt: row.created_at,
       }
     );
+    assertEnvelopeFits(envelope.ciphertext);
     if (!this.sendFrame(sendRequest(toUserId, randomUUID(), envelope, groupId))) {
       throw new Error("offline");
     }
@@ -1306,19 +1427,35 @@ class YaprClient {
 
   private async handleIncoming(frame: IncomingFrame): Promise<void> {
     const user = store.getSessionUser();
-    let senderKey: string | null = store.getPeerKey(frame.from);
-    if (!senderKey) {
+    const envelope = { ciphertext: frame.ciphertext, nonce: frame.nonce };
+    const isLegacyPlaintext = frame.nonce === "";
+    const cachedKey: string | null = store.getPeerKey(frame.from);
+    let senderKey = cachedKey;
+    if (!senderKey && !isLegacyPlaintext) {
       try {
         const keys = await this.requestKeys([frame.from]);
         senderKey = keys[frame.from] ?? null;
       } catch {
-        senderKey = null;
+        // Transient (timeout, rate limit, dropped socket). Storing the
+        // placeholder and acking here destroyed the message for good; leave
+        // it unacked so the server redelivers it on the next identify.
+        return;
       }
     }
-    const opened = openEnvelope(senderKey, user?.user_id ?? "", frame.from, {
-      ciphertext: frame.ciphertext,
-      nonce: frame.nonce,
-    });
+    let opened = openEnvelope(senderKey, user?.user_id ?? "", frame.from, envelope);
+    if (!opened.ok && cachedKey && !isLegacyPlaintext) {
+      // The cached key may be stale (peer recovered this id with a new
+      // identity key). Re-fetch once before declaring the message unreadable.
+      let fresh: string | null;
+      try {
+        fresh = (await this.requestKeys([frame.from], { force: true }))[frame.from] ?? null;
+      } catch {
+        return; // Transient: redelivered on the next identify.
+      }
+      if (fresh && fresh !== cachedKey) {
+        opened = openEnvelope(fresh, user?.user_id ?? "", frame.from, envelope);
+      }
+    }
     if (opened.ok && opened.kind) {
       // Machine frame (nickname control): route to the nick machinery, ack
       // for server cleanup, and never file chat, badges, or receipts.

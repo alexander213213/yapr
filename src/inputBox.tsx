@@ -26,7 +26,8 @@ export default memo(function ChatInput({
   onSubmit,
 }: {
   focused: boolean;
-  onSubmit: (text: string) => void;
+  /** Returns false to reject the draft (kept in the box, e.g. too long). */
+  onSubmit: (text: string) => boolean;
 }) {
   const [draft, setDraft] = useState<EditorState>(emptyEditor());
   const theme = getTheme();
@@ -38,8 +39,7 @@ export default memo(function ChatInput({
     if (isBlocked()) return;
     if (key.tab) return;
     if (key.return && !key.shift) {
-      if (draft.text.trim()) {
-        onSubmit(draft.text);
+      if (draft.text.trim() && onSubmit(draft.text)) {
         setDraft(emptyEditor());
       }
       return;

@@ -112,18 +112,26 @@ const unreadCountsStmt = db.prepare(`
     GROUP BY peer_id
 `);
 
+// Thread views show the NEWEST 200 rows, oldest-first. (ASC + LIMIT kept the
+// oldest 200, so long threads stopped showing new messages on reopen.)
+export const THREAD_VIEW_LIMIT = 200;
+
 const findMessagesByPeerIdStmt = db.prepare(`
-    SELECT * FROM messages
-    WHERE peer_id = ? AND group_id IS NULL
-    ORDER BY created_at ASC, id ASC
-    LIMIT 200
+    SELECT * FROM (
+      SELECT * FROM messages
+      WHERE peer_id = ? AND group_id IS NULL
+      ORDER BY created_at DESC, id DESC
+      LIMIT ${THREAD_VIEW_LIMIT}
+    ) ORDER BY created_at ASC, id ASC
 `);
 
 const findGroupMessagesStmt = db.prepare(`
-    SELECT * FROM messages
-    WHERE group_id = ?
-    ORDER BY created_at ASC, id ASC
-    LIMIT 200
+    SELECT * FROM (
+      SELECT * FROM messages
+      WHERE group_id = ?
+      ORDER BY created_at DESC, id DESC
+      LIMIT ${THREAD_VIEW_LIMIT}
+    ) ORDER BY created_at ASC, id ASC
 `);
 
 const findGroupMessagesBeforeStmt = db.prepare(`
@@ -270,6 +278,12 @@ export function listGroupCache(): GroupThread[] {
 
 export function getGroupMembers(groupId: string): GroupMemberRow[] {
   return listGroupMembersStmt.all(groupId) as GroupMemberRow[];
+}
+
+/** Envelopes a group send fans out to: cached members minus ourselves. */
+export function groupRecipientCount(groupId: string): number {
+  const me = getSessionUser()?.user_id;
+  return getGroupMembers(groupId).filter((m) => m.user_id !== me).length;
 }
 
 export function isGroupAdmin(groupId: string, userId: string): boolean {

@@ -37,6 +37,9 @@ export type BusEvents = {
   history_sync_state: [msg: { groupId: string; waiting: boolean }];
   /** Silent account-recovery outcome (persistent status line, not a toast). */
   reclaim_status: [msg: { ok: boolean; message: string }];
+  /** Signed out because this account identified elsewhere; auto-reconnect is
+   *  off (it would kick the other device back). Persistent notice. */
+  session_kicked: [];
   /** Coded server error (log/toast; connection stays up). */
   server_error: [msg: ErrorFrame];
 };

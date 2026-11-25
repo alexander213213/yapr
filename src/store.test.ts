@@ -39,7 +39,33 @@ const {
   saveSessionUser,
   setSetting,
   setSharedNick,
+  getAllMessagesByPeerId,
+  getGroupMessages,
+  THREAD_VIEW_LIMIT,
 } = await import("./store.js");
+
+describe("thread view window", () => {
+  it("shows the newest rows (oldest-first) once a DM outgrows the limit", () => {
+    const peer = `long-dm-${UID}`;
+    for (let i = 0; i < THREAD_VIEW_LIMIT + 50; i++) {
+      insertIncomingMessage(peer, `ld-${UID}-${i}`, `msg ${i}`, 10_000 + i);
+    }
+    const rows = getAllMessagesByPeerId(peer);
+    expect(rows).toHaveLength(THREAD_VIEW_LIMIT);
+    expect(rows[0]?.text).toBe("msg 50");
+    expect(rows.at(-1)?.text).toBe(`msg ${THREAD_VIEW_LIMIT + 49}`);
+  });
+
+  it("does the same for group threads", () => {
+    const gid = `long-grp-${UID}`;
+    for (let i = 0; i < THREAD_VIEW_LIMIT + 10; i++) {
+      insertIncomingMessage(`member-${i % 3}`, `lg-${UID}-${i}`, `g ${i}`, 20_000 + i, gid);
+    }
+    const rows = getGroupMessages(gid);
+    expect(rows).toHaveLength(THREAD_VIEW_LIMIT);
+    expect(rows.at(-1)?.text).toBe(`g ${THREAD_VIEW_LIMIT + 9}`);
+  });
+});
 
 describe("store threads", () => {
   it("tracks unread counts and flips threads read with ids", () => {
