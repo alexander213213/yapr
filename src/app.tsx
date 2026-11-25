@@ -15,7 +15,8 @@ import ChatInput from "./inputBox.js";
 import { getTheme } from "./themes.js";
 import { isBlocked, isEditingText } from "./editMode.js";
 import { socketBus } from "./eventStore.js";
-import { findUserStmt, getGroupCache, groupIdFromThreadKey, groupThreadKey, openChat } from "./store.js";
+import { findUserStmt, getGroupCache, groupIdFromThreadKey, groupRecipientCount, groupThreadKey, openChat } from "./store.js";
+import { messageSizeError } from "./messageLimits.js";
 
 
 
@@ -43,6 +44,8 @@ export default memo(function App() {
     // Reconnect visibility: latest retry reason, held while offline so a dead
     // server never looks like a hang. Cleared on any successful connection.
     const [connectNotice, setConnectNotice] = useState<string | undefined>()
+    // Signed out by a login elsewhere: held until a later identify (restart).
+    const [kickedNotice, setKickedNotice] = useState<string | undefined>()
     const [view, setView] = useState<"chat" | "contacts" | "settings" | "themePicker" | "createGroup" | "members" | "nicks">("chat")
     const [modalReturnView, setModalReturnView] = useState<"chat" | "contacts">("chat")
     const [detailsOpen, setDetailsOpen] = useState(false)
@@ -57,14 +60,28 @@ export default memo(function App() {
     const availableHeight = size.rows - 1 - 3
 
 
-    const handleTextSubmit = useCallback((text: string) => {
-        if (!contactRef.current) return
+    const handleTextSubmit = useCallback((text: string): boolean => {
+        const thread = contactRef.current
+        if (!thread) return false
+        // Reject before the draft is cleared or a pending row is written: an
+        // oversized row can never be relayed and used to wedge the connection.
+        const groupId = groupIdFromThreadKey(thread.peerId)
+        const tooLong = messageSizeError(text.trim(), groupId ? groupRecipientCount(groupId) : undefined)
+        if (tooLong) {
+            setLastError(tooLong)
+            return false
+        }
         socketBus.emit("send_message", text)
+        return true
     }, [])
     useEffect(() => {
         const onIdentified = () => {
             setUser(findUserStmt.get() as UserRow | undefined)
             setReclaimNotice(undefined)
+            setKickedNotice(undefined)
+        }
+        const onSessionKicked = () => {
+            setKickedNotice("Signed in on another device — this one stays offline. Restart yapr to take the session back.")
         }
         const onConnection = (isOnline: boolean) => {
             setOnline(isOnline)
@@ -88,6 +105,7 @@ export default memo(function App() {
         socketBus.on("server_error", onServerError)
         socketBus.on("reclaim_status", onReclaimStatus)
         socketBus.on("connection_notice", onConnectionNotice)
+        socketBus.on("session_kicked", onSessionKicked)
         const onHistorySync = (msg: { groupId: string, count: number }) => {
             const name = getGroupCache(msg.groupId)?.name ?? "group";
             setSyncNotice(`Loaded ${msg.count} older messages in ${name}`)
@@ -110,6 +128,7 @@ export default memo(function App() {
             socketBus.off("server_error", onServerError)
             socketBus.off("reclaim_status", onReclaimStatus)
             socketBus.off("connection_notice", onConnectionNotice)
+            socketBus.off("session_kicked", onSessionKicked)
             socketBus.off("history_sync", onHistorySync)
             socketBus.off("history_sync_state", onHistorySyncState)
         }
@@ -293,6 +312,7 @@ export default memo(function App() {
                         <Text bold color={theme.roles.accent}>Yapr | {user ? user.user_id : ""} {online ? "●" : "○"}</Text>
                         {lastError ? <Text color={theme.roles.error}>{lastError}</Text> : null}
                         {reclaimNotice ? <Text color={theme.roles.error}>{reclaimNotice}</Text> : null}
+                        {kickedNotice ? <Text color={theme.roles.error}>{kickedNotice}</Text> : null}
                         {connectNotice && !online ? <Text dimColor>{connectNotice}</Text> : null}
                         <Box width={"100%"} flexGrow={1} alignItems="stretch" justifyContent="center" overflow="hidden">
                             <Sidebar focused={focused === "sidebar"} openPeerId={contactInfo?.peerId} setContactInfo={setContactInfo} onOpenBrowser={() => setView("contacts")}></Sidebar>

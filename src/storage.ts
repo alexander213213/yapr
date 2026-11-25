@@ -99,11 +99,21 @@ export function ensureDataDir(): string {
   const dir = resolveDataDir();
   fs.mkdirSync(dir, { recursive: true });
 
+  // An explicit YAPR_DATA_DIR is a deliberate choice (tests, profiles): never
+  // seed it from the package dir. Seeding leaked a dev checkout's legacy DB
+  // into every test data dir.
+  if (process.env.YAPR_DATA_DIR?.trim()) return dir;
+
   const target = dbPathFor(dir);
   if (!fs.existsSync(target)) {
     const legacy = legacyDbPath();
     if (path.resolve(legacy) !== path.resolve(target) && fs.existsSync(legacy)) {
+      // WAL mode: committed rows may still live in the -wal sidecar, so copy
+      // it (and -shm) alongside or recent history is silently dropped.
       fs.copyFileSync(legacy, target);
+      for (const suffix of ["-wal", "-shm"]) {
+        if (fs.existsSync(legacy + suffix)) fs.copyFileSync(legacy + suffix, target + suffix);
+      }
       console.log(`migrated legacy db ${legacy} -> ${target}`);
     }
   }

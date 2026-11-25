@@ -32,6 +32,15 @@ db.exec(`
   PRAGMA foreign_keys = ON;
 `);
 
+// Probe BEFORE the baseline block creates anything: a database that already
+// holds a messages table but no schema_version predates versioning (v0, the
+// legacy package-dir DB). It must enter the chain at v1, not be stamped
+// current — stamping skipped every migration and crashed on group_id.
+const tableExists = (name: string): boolean =>
+  db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`).get(name) !==
+  undefined;
+const preVersioned = tableExists("messages") && !tableExists("schema_version");
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER PRIMARY KEY
@@ -141,8 +150,10 @@ const row = db
   .get() as { version: number } | undefined;
 let version: number;
 if (!row) {
-  db.prepare(`INSERT INTO schema_version (version) VALUES (?)`).run(SCHEMA_VERSION);
-  version = SCHEMA_VERSION;
+  // v0 shares v1's columns (only the status CHECK is narrower), so the v1->v2
+  // rebuild below carries it forward unchanged.
+  version = preVersioned ? 1 : SCHEMA_VERSION;
+  db.prepare(`INSERT INTO schema_version (version) VALUES (?)`).run(version);
 } else {
   version = row.version;
 }
@@ -223,8 +234,9 @@ if (version === 3) {
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_messages_group ON messages (group_id, created_at);
   `);
-  db.prepare(`UPDATE schema_version SET version = ?`).run(SCHEMA_VERSION);
-  version = SCHEMA_VERSION;
+  // Step to 4, not current: v4->v5 (nick adoption) must still run.
+  db.prepare(`UPDATE schema_version SET version = ?`).run(4);
+  version = 4;
 }
 
 if (version === 4) {
