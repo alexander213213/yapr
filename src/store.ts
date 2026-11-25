@@ -86,7 +86,7 @@ const updateMessageStatusToReadStmt = db.prepare(`
 
 const markInboundReadStmt = db.prepare(`
     UPDATE messages SET status = 'read'
-    WHERE peer_id = ? AND direction = 'in' AND status = 'received'
+    WHERE peer_id = ? AND group_id IS NULL AND direction = 'in' AND status = 'received'
     RETURNING message_id
 `);
 

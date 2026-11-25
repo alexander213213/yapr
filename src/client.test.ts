@@ -324,6 +324,11 @@ describe("nick machine frames", () => {
     process.env.YAPR_DATA_DIR = TEST_DIR;
     // Pre-seed the sender key so no network lookup is needed.
     store.setPeerKey(sender, senderPub);
+    // Nick updates are only accepted from the group's admin.
+    store.upsertGroupCache(gid, "Nicks", [
+      { user_id: sender, role: "admin", joined_at: 1 },
+      { user_id: me, role: "member", joined_at: 1 },
+    ]);
 
     const incoming: string[] = [];
     let syncs = 0;

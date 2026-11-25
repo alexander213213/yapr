@@ -1399,8 +1399,12 @@ class YaprClient {
       }
       return;
     }
+    if (!frame.groupId) return;
+    // Only the admin's word is authoritative. Any member could otherwise
+    // overwrite everyone's nick (with an unbeatable updatedAt).
+    const fromAdmin = store.isGroupAdmin(frame.groupId, frame.from);
     if (kind.kind === "nick-update") {
-      if (!frame.groupId) return;
+      if (!fromAdmin) return;
       if (this.applySharedNick(frame.groupId, kind.target, kind.nick, kind.updatedAt)) {
         socketBus.emit("nicks_changed");
         socketBus.emit("chats_changed");
@@ -1408,9 +1412,11 @@ class YaprClient {
       return;
     }
     // Snapshot: merge row-by-row by LWW; single repaint when anything moved.
+    // Non-admin snapshots are legitimate (history sharers piggyback them to
+    // newcomers) but may only fill rows we lack, never overwrite.
     let moved = false;
     for (const row of kind.nicks) {
-      if (!frame.groupId) break;
+      if (!fromAdmin && store.getSharedNick(frame.groupId, row.userId)) continue;
       if (this.applySharedNick(frame.groupId, row.userId, row.nick, row.updatedAt)) {
         moved = true;
       }
